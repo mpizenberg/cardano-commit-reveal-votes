@@ -1,0 +1,3 @@
+[submodule "minimal/elm-cardano"]
+	path = minimal/elm-cardano
+	url = git@github.com:elm-cardano/elm-cardano.git

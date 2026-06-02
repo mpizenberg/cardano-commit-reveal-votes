@@ -28,24 +28,24 @@ Companion design rationale: `commit-reveal-drand-voting-report.md`. This documen
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 1 | Mode is named **`timelocked`** (UI: "delayed reveal / revealable after round R"). Not "secret". | Avoid implying permanent confidentiality; it is a time-delayed reveal. |
-| 2 | Store **raw IBE bytes** `U‖V‖W`, **not** the age envelope. | Compact; decryption parameters come from the survey definition. See §5.1 for the documented tradeoff. |
-| 3 | Survey definition pins **ballot mode, Drand chain hash, target round `R`, and `padding_size`**. | Responses carry none of this; one source of truth per survey. |
-| 4 | **Pad the CBOR-encoded answers with zero bytes up to `padding_size`** before encrypting. | Fixes ciphertext length so it does not leak ballot content size. CBOR is self-delimiting, so trailing zeros are ignored on decrypt. |
+| 2 | Store the **age-envelope blob** (binary age payload, armor stripped), **not** raw IBE bytes. | The fork's raw IBE (`encryptOnG2RFC9380`) only safely encrypts **≤ 32-byte** messages (`gtToHash`/`h4` slice a 32-byte SHA-256 digest to `len`; `xor` throws on mismatch — `ibe.ts`, `utils.ts:6`). The age envelope IBE-encrypts a random 32-byte file key and ChaCha20-STREAMs the payload, so it supports arbitrary answer sizes. See §5.1. |
+| 3 | Survey definition still pins **ballot mode, Drand chain hash, target round `R`, and `padding_size`**. | Responses carry none of this; one source of truth per survey. (The age blob *also* embeds round+hash in its tlock stanza — see §7 — but the def stays authoritative for the deadline/reveal-time UI and the validity check.) |
+| 4 | **Pad the CBOR-encoded answers with zero bytes up to `padding_size`** before encrypting. | The ChaCha20 STREAM ciphertext length equals the plaintext length, so padding still fixes the blob size and hides ballot content size. CBOR is self-delimiting, so trailing zeros are ignored on decrypt. |
 | 5 | **Hardcode** quicknet's Drand parameters in the JS bundle (and document them). | They are long-lived network constants; avoids a network round-trip just to compute `R`. |
 | 6 | Survey creation takes a **deadline (minute precision)** and derives `R` client-side from the hardcoded params. | Simple UX; no live `/info` fetch needed. |
 | 7 | Bundle `tlock-js` **once** with esbuild and commit `static/tlock.js`. No esbuild dependency inside `minimal/`. | Matches how `elm-cardano.js` / `elm-concurrent-task.js` were produced. |
 
 ---
 
-## 3. Cryptographic scheme (raw IBE on quicknet)
+## 3. Cryptographic scheme (age envelope on quicknet)
 
-Quicknet is `bls-unchained-g1-rfc9380`: BLS12-381 with **signatures on G1**, **public key on G2**.
+Quicknet is `bls-unchained-g1-rfc9380`: BLS12-381 with **signatures on G1**, **public key on G2**. We use the fork's high-level `timelockEncrypt`/`timelockDecrypt`, which wrap the IBE in an age envelope:
 
-- **Encrypt** (local, no network): IBE-encrypt the padded ballot directly with `encryptOnG2RFC9380(masterPublicKey, ID, msg)`, where `ID = SHA256(round_be64)` is the round identity. Output ciphertext is `(U, V, W)`:
-  - `U` = `r · G2`, the ephemeral element, **96 bytes** compressed.
-  - `V`, `W` = XOR masks, each **`len(msg)` bytes** = `padding_size` bytes.
-  - Serialized ciphertext = `U ‖ V ‖ W` = `96 + 2·padding_size` bytes.
-- **Decrypt** (needs network): fetch the round signature `σ_R` (a G1 point, 48 bytes) from Drand, then `decryptOnG2(σ_R, {U, V, W})`. `σ_R` is exactly the IBE trapdoor for identity `H(round)`.
+- **Encrypt** (local, no network for the crypto): `timelockEncrypt(R, paddedPlaintext, client)` generates a random 32-byte file key, IBE-encrypts that key to round `R` (`ID = SHA256(round_be64)`, raw IBE `U‖V‖W`, 160 bytes), and ChaCha20-STREAM-encrypts the padded plaintext under the file key. The result is an age payload (a tlock stanza carrying round + chain hash, then the STREAM body). We **strip the armor** and store the binary age payload.
+  - STREAM ciphertext length = plaintext length + 16-byte Poly1305 tag per 64 KiB chunk, so a `padding_size`-byte plaintext yields a fixed blob size.
+- **Decrypt** (needs network): `timelockDecrypt(ageBlob, client)` reads round `R` from the stanza, fetches `σ_R` from Drand, recovers the file key via `decryptOnG2(σ_R, …)`, then STREAM-decrypts the payload.
+
+Note: because we keep the high-level API, the wrapper does **not** re-implement round-identity hashing or the DST — the library owns those. This is the lower-risk path chosen over raw IBE (which would have capped plaintext at 32 bytes).
 
 Hardcoded quicknet constants (to live in `tlock.js`, documented in a header comment):
 
@@ -91,7 +91,7 @@ Encode/decode in `toMetadatum` / `fromMetadatum` / `decodeDefinition`. Bump `spe
 ### 4.2 Response answers
 
 - **Public response**: unchanged — `[+ answer_item]`.
-- **Timelocked response**: the `answers` field becomes a single byte blob `U‖V‖W`, stored as a **list of ≤64-byte byte chunks** (reuse the chunking helper at `Survey.elm:278-325`). The rest of the response tuple — `survey_ref`, `role`, `credential` — stays public and identical to today.
+- **Timelocked response**: the `answers` field becomes a single byte blob (the armor-stripped **age payload**), stored as a **list of ≤64-byte byte chunks** (reuse the chunking helper at `Survey.elm:278-325`). The rest of the response tuple — `survey_ref`, `role`, `credential` — stays public and identical to today.
 
 The decoder picks the shape from the referenced survey's ballot mode; if the survey is unknown, the blob stays opaque.
 
@@ -108,20 +108,20 @@ plaintext = cbor(answers) ‖ zero_pad_to(padding_size)
 
 ## 5. Architecture
 
-### 5.1 JS bundle `static/tlock.js` (the documented tradeoff)
+### 5.1 JS bundle `static/tlock.js`
 
-A thin wrapper around the `@mpizenberg/tlock-js` fork, exposing two functions, registered as concurrent tasks. **Because we store raw IBE bytes (decision 2), we bypass the library's high-level `timelockEncrypt`/`timelockDecrypt` (which produce/consume the age envelope) and call the low-level IBE directly.** Consequence to document in the file header:
+A thin wrapper around the `@mpizenberg/tlock-js` fork, exposing two functions, registered as concurrent tasks. It uses the library's high-level `timelockEncrypt`/`timelockDecrypt` (age envelope). The only customization is **stripping/omitting the PEM armor**: `timelockEncrypt` returns an armored string, so the wrapper `decodeArmor`s it down to the binary age payload before returning; `timelockDecrypt` accepts an unarmored payload directly (`isProbablyArmored` is false → used as-is). To document in the file header:
 
-> This wrapper reimplements the round-identity hashing (`SHA256` of the 64-bit big-endian round) and uses the quicknet DST verbatim from the fork's source, so they cannot drift from the library. The age layer (ChaCha20 file-key wrapping + armor) is intentionally dropped: round and chain hash are not embedded in the stored ciphertext and **must** be supplied from the survey definition at decrypt time. Trade-off accepted for compactness; the higher-level age API would be lower-risk but larger and redundant with the survey definition.
+> This wrapper delegates all crypto to the fork's high-level `timelockEncrypt`/`timelockDecrypt`; round-identity hashing, DST, IBE, and the ChaCha20 file-key envelope are owned by the library and cannot drift. Only the age **armor** (PEM text wrapper) is stripped, to shrink the on-chain blob. The round and chain hash remain embedded in the age tlock stanza; the survey definition independently pins them for the deadline/reveal-time UI and the read-time validity check (§7).
 
 Task surface (args/results as hex strings over the concurrent-task JSON channel):
 
 ```
-tlock:encrypt { round, plaintextHex }            -> { ciphertextHex }   // U‖V‖W, local only
-tlock:decrypt { round, ciphertextHex }           -> { plaintextHex }    // fetches σ_R, verifies, IBE-decrypts
+tlock:encrypt { round, plaintextHex }   -> { ciphertextHex }   // armor-stripped age payload, local crypto
+tlock:decrypt { ciphertextHex }         -> { plaintextHex }    // reads R from stanza, fetches σ_R, verifies, decrypts
 ```
 
-`tlock:decrypt` fetches `σ_R` from `beaconURL`, verifies it against the hardcoded public key, then runs `decryptOnG2`.
+`tlock:decrypt` does not need `round` passed in — the library reads it from the stanza, fetches `σ_R` from `beaconURL`, and the client verifies it against the hardcoded public key before decrypting.
 
 ### 5.2 Wiring (`index.html`)
 
@@ -170,8 +170,8 @@ ConcurrentTask.register({
 
 A timelocked response counts (under latest-valid-response-wins) iff:
 1. it references a known timelocked survey;
-2. its ciphertext blob length is `≥ 96 + 2·padding_size` and parses as `U‖V‖W`;
-3. it decrypts under `σ_R` for the survey's `R`; and
+2. its blob parses as an age payload whose tlock stanza names the survey's pinned `R` and chain hash;
+3. it decrypts under `σ_R`; and
 4. the decrypted CBOR is a valid answer set for the survey's questions (trailing padding ignored).
 
 Anything else is shown as discarded with a reason. There is no on-chain enforcement; the read-time rule is the only authority.
@@ -180,12 +180,12 @@ Anything else is shown as discarded with a reason. There is no on-chain enforcem
 
 ## 8. Build process
 
-1. In `tlock-minimal-example/` (already has the fork in `node_modules`), add a small wrapper entry module exporting `encrypt`/`decrypt` per §5.1.
-2. Bundle once: `esbuild --bundle --platform=neutral --format=esm <wrapper> --outfile=tlock.js`.
-3. Copy the output to `minimal/static/tlock.js` with a documented header comment (constants + the raw-IBE tradeoff note).
+1. In `tlock-minimal-example/` (already has the fork in `node_modules`), add a small wrapper entry module (`src/tlock-wrapper.ts`) exporting `encrypt`/`decrypt` per §5.1, plus `register` glue or plain exports for `index.html` to call.
+2. Bundle once with esbuild: `esbuild --bundle --platform=neutral --format=esm src/tlock-wrapper.ts --outfile=tlock.js`. The fork's `buffer` dependency is bundled, so no Node `Buffer` global is needed in the browser.
+3. Copy the output to `minimal/static/tlock.js` with a documented header comment (quicknet constants + the armor-stripping note from §5.1).
 4. `minimal/` build is unchanged: `elm-cardano make src/Main.elm --output=static/main.js`.
 
-Risk to verify first (highest-risk step): browser compatibility of the fork (noble curves are fine; watch for any `Buffer` usage — shim or use the fork's exported `Buffer`). Validate an encrypt→decrypt round-trip against live quicknet with a near-future round before touching Elm.
+Risk to verify first (highest-risk step): browser compatibility of the fork (noble curves are fine; the fork imports the `buffer` package explicitly, so esbuild bundles a polyfill — no host `Buffer` global required). Validate an encrypt→decrypt round-trip against live quicknet with a near-future round before touching Elm.
 
 ---
 

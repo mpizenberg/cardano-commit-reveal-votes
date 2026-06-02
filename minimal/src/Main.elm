@@ -29,6 +29,7 @@ import Route
 import Survey.Codec as Codec
 import Survey.Csv as Csv
 import Survey.Form as Form
+import Survey.Results as Results
 import Survey.Types as ST exposing (BallotState(..), OnchainResponse, OnchainSurvey)
 import Survey.View as View
 import Task
@@ -333,7 +334,7 @@ update msg model =
         ExportCsv survey ->
             let
                 deduped =
-                    dedupLatestResponses model.surveyTxSlot (responsesForSurvey survey model.onchainResponses)
+                    Results.dedupLatestResponses model.surveyTxSlot (Results.responsesForSurvey survey model.onchainResponses)
 
                 filename =
                     "survey-" ++ survey.txHash ++ "-" ++ String.fromInt survey.index ++ ".csv"
@@ -789,7 +790,7 @@ viewKioskSurvey model survey =
                 model.onchainCancellations
 
         deduped =
-            dedupLatestResponses model.surveyTxSlot (responsesForSurvey survey model.onchainResponses)
+            Results.dedupLatestResponses model.surveyTxSlot (Results.responsesForSurvey survey model.onchainResponses)
     in
     div []
         [ if isCancelled then
@@ -894,7 +895,7 @@ viewRevealProgress model survey deduped =
                     List.length
                         (List.filter
                             (\r ->
-                                case Dict.get (ballotKey r) model.decryptedBallots of
+                                case Dict.get (Results.ballotKey r) model.decryptedBallots of
                                     Just (Decrypted _) ->
                                         True
 
@@ -970,7 +971,7 @@ revealedItems model resp =
             Just answerItems
 
         ST.TimelockedAnswers _ ->
-            case Dict.get (ballotKey resp) model.decryptedBallots of
+            case Dict.get (Results.ballotKey resp) model.decryptedBallots of
                 Just (Decrypted answerItems) ->
                     Just answerItems
 
@@ -988,10 +989,10 @@ viewQuestionResult : List ST.AnswerItem -> Int -> ST.SurveyQuestion -> Html Msg
 viewQuestionResult items qIdx question =
     case question of
         ST.SingleChoice { prompt, options } ->
-            viewChoiceTally prompt options (singleChoiceCounts qIdx options items)
+            viewChoiceTally prompt options (Results.singleChoiceCounts qIdx options items)
 
         ST.MultiSelect { prompt, options } ->
-            viewChoiceTally prompt options (multiSelectCounts qIdx options items)
+            viewChoiceTally prompt options (Results.multiSelectCounts qIdx options items)
 
         ST.Ranking { prompt } ->
             viewNoAggregation prompt "Ranking"
@@ -1001,50 +1002,6 @@ viewQuestionResult items qIdx question =
 
         ST.Custom { prompt } ->
             viewNoAggregation prompt "Custom"
-
-
-singleChoiceCounts : Int -> List String -> List ST.AnswerItem -> List Int
-singleChoiceCounts qIdx options items =
-    let
-        selected =
-            List.filterMap
-                (\it ->
-                    case it of
-                        ST.AnswerSingleChoice q o ->
-                            if q == qIdx then
-                                Just o
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-                )
-                items
-    in
-    List.indexedMap (\optIdx _ -> List.length (List.filter ((==) optIdx) selected)) options
-
-
-multiSelectCounts : Int -> List String -> List ST.AnswerItem -> List Int
-multiSelectCounts qIdx options items =
-    let
-        selected =
-            List.concatMap
-                (\it ->
-                    case it of
-                        ST.AnswerMultiSelect q os ->
-                            if q == qIdx then
-                                os
-
-                            else
-                                []
-
-                        _ ->
-                            []
-                )
-                items
-    in
-    List.indexedMap (\optIdx _ -> List.length (List.filter ((==) optIdx) selected)) options
 
 
 viewChoiceTally : String -> List String -> List Int -> Html Msg
@@ -1137,52 +1094,6 @@ viewParticipationByRole responses =
                 (\( role, n ) -> p [ HA.class "meta" ] [ text ("  " ++ role ++ ": " ++ String.fromInt n) ])
                 counts
             )
-
-
-responsesForSurvey : OnchainSurvey -> List OnchainResponse -> List OnchainResponse
-responsesForSurvey survey responses =
-    List.filter
-        (\r -> r.response.surveyRef.txHash == survey.txHash && r.response.surveyRef.index == survey.index)
-        responses
-
-
-{-| Keep the latest response per identity tuple `(role, credential)` for one
-survey. Order-independent: latest is resolved from each tx's `absolute_slot`,
-tie-broken by `ballotIndex` (responseIndex). This does not depend on the
-unspecified row order of the `/tx_metadata` response. The spec's full chain order
-is `(slot, txIndexInBlock, responseIndex)`; we don't fetch `txIndexInBlock`, so
-two responses in the same slot from different txs are only tie-broken weakly.
--}
-dedupLatestResponses : Dict String Int -> List OnchainResponse -> List OnchainResponse
-dedupLatestResponses txSlot responses =
-    let
-        key r =
-            ST.roleToString r.response.role ++ "|" ++ ST.credentialToHex r.response.responder
-
-        -- Larger tuple = more recent: higher absolute slot, then higher ballotIndex.
-        recency r =
-            ( Dict.get r.txHash txSlot |> Maybe.withDefault 0, r.ballotIndex )
-    in
-    List.foldl
-        (\r acc ->
-            Dict.update (key r)
-                (\existing ->
-                    case existing of
-                        Just e ->
-                            if recency r > recency e then
-                                Just r
-
-                            else
-                                Just e
-
-                        Nothing ->
-                            Just r
-                )
-                acc
-        )
-        Dict.empty
-        responses
-        |> Dict.values
 
 
 viewKioskResponses : Model -> OnchainSurvey -> List OnchainResponse -> Html Msg
@@ -1739,7 +1650,7 @@ viewResponsesTab model =
             else
                 let
                     groups =
-                        groupResponsesBySurvey surveys nonCancelledResponses
+                        Results.groupResponsesBySurvey surveys nonCancelledResponses
                 in
                 div []
                     [ p [ HA.class "meta" ]
@@ -1755,50 +1666,7 @@ viewResponsesTab model =
                     ]
 
 
-type alias ResponseGroup =
-    { survey : Maybe OnchainSurvey
-    , surveyRef : ST.SurveyRef
-    , responses : List OnchainResponse
-    }
-
-
-groupResponsesBySurvey : List OnchainSurvey -> List OnchainResponse -> List ResponseGroup
-groupResponsesBySurvey surveys responses =
-    let
-        refKey ref =
-            ref.txHash ++ ":" ++ String.fromInt ref.index
-
-        surveyDict =
-            List.map (\s -> ( s.txHash ++ ":" ++ String.fromInt s.index, s )) surveys
-                |> Dict.fromList
-    in
-    List.foldl
-        (\resp acc ->
-            let
-                key =
-                    refKey resp.response.surveyRef
-            in
-            Dict.update key
-                (\existing ->
-                    case existing of
-                        Just group ->
-                            Just { group | responses = group.responses ++ [ resp ] }
-
-                        Nothing ->
-                            Just
-                                { survey = Dict.get key surveyDict
-                                , surveyRef = resp.response.surveyRef
-                                , responses = [ resp ]
-                                }
-                )
-                acc
-        )
-        Dict.empty
-        responses
-        |> Dict.values
-
-
-viewResponseGroup : Model -> ResponseGroup -> Html Msg
+viewResponseGroup : Model -> Results.ResponseGroup -> Html Msg
 viewResponseGroup model group =
     let
         maybeDef =
@@ -1844,15 +1712,6 @@ viewResponse model maybeDef resp =
         ]
 
 
-{-| Unique key for a timelocked ballot's decryption state: the submitting Tx
-hash plus the ballot's position within that Tx's ballot list. (Responder
-credential is not unique — one Tx may carry ballots for several surveys.)
--}
-ballotKey : OnchainResponse -> String
-ballotKey resp =
-    resp.txHash ++ ":" ++ String.fromInt resp.ballotIndex
-
-
 viewTimelockedAnswers : Model -> Maybe ST.SurveyDefinition -> OnchainResponse -> Bytes.Bytes Bytes.Any -> Html Msg
 viewTimelockedAnswers model maybeDef resp blob =
     case Maybe.map .ballotMode maybeDef of
@@ -1875,7 +1734,7 @@ viewTimelockedAnswers model maybeDef resp blob =
             else
                 let
                     key =
-                        ballotKey resp
+                        Results.ballotKey resp
                 in
                 case Dict.get key model.decryptedBallots of
                     Just Decrypting ->

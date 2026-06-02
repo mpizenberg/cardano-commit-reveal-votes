@@ -548,11 +548,28 @@ update msg model =
                                             []
                                 )
                                 parsed
+
+                        -- In kiosk mode, prime the response form for the focused survey
+                        -- so it can be filled inline without a "Respond" click.
+                        ( focusTarget, focusForm ) =
+                            case ( model.focus, model.responseTarget ) of
+                                ( Focus ref, Nothing ) ->
+                                    case List.head (List.filter (\s -> s.txHash == ref.txHash && s.index == ref.index) validSurveys) of
+                                        Just survey ->
+                                            ( Just survey, Survey.initResponseForm survey.definition )
+
+                                        Nothing ->
+                                            ( model.responseTarget, model.responseForm )
+
+                                _ ->
+                                    ( model.responseTarget, model.responseForm )
                     in
                     ( { model
                         | onchainSurveys = Success validSurveys
                         , onchainResponses = responses
                         , onchainCancellations = cancellations
+                        , responseTarget = focusTarget
+                        , responseForm = focusForm
                       }
                     , Cmd.none
                     )
@@ -844,9 +861,22 @@ viewKioskSurvey model survey =
 
           else
             text ""
-        , Survey.viewSurvey survey.definition
         , p [ HA.class "meta" ]
             [ text ("Tx: " ++ survey.txHash ++ " [" ++ String.fromInt survey.index ++ "]") ]
+        , if isCancelled then
+            -- No response form when cancelled, so show the definition on its own.
+            Survey.viewSurvey survey.definition
+
+          else
+            div []
+                [ Survey.viewResponseForm
+                    survey.definition
+                    model.responseForm
+                    model.responseFormError
+                    (submitButtonLabel "Connect wallet to respond" "Submit Response On-Chain" model)
+                    ResponseFormMsg
+                , viewSubmissionStatus model.submissionStatus
+                ]
         ]
 
 

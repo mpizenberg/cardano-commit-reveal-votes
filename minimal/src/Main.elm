@@ -28,6 +28,7 @@ import Json.Decode as JD exposing (Decoder, Value)
 import Natural as N
 import RemoteData exposing (RemoteData(..), WebData)
 import Survey
+import Survey.Codec as Codec
 import Survey.Types as ST
 import Task
 import Time
@@ -341,7 +342,7 @@ update msg model =
                             case Cardano.Address.extractPaymentCred (Cip30.walletChangeAddress wallet) of
                                 Just cred ->
                                     buildSignResponseTx model
-                                        (Survey.buildTimelockedResponseMetadatum
+                                        (Codec.buildTimelockedResponseMetadatum
                                             { txHash = target.txHash, index = target.index }
                                             role
                                             cred
@@ -397,7 +398,7 @@ update msg model =
                 state =
                     case response of
                         ConcurrentTask.Success { plaintextHex } ->
-                            case Survey.decodeAnswersFromPlaintextHex plaintextHex of
+                            case Codec.decodeAnswersFromPlaintextHex plaintextHex of
                                 Ok items ->
                                     Decrypted items
 
@@ -513,7 +514,7 @@ update msg model =
                         parsed =
                             List.filterMap
                                 (\txMeta ->
-                                    case Survey.fromMetadatum txMeta.metadatum of
+                                    case Codec.fromMetadatum txMeta.metadatum of
                                         Ok payload ->
                                             Just ( txMeta, payload )
 
@@ -613,7 +614,7 @@ submitSurvey model =
                             Cip30.walletChangeAddress wallet
 
                         surveyMetadatum =
-                            Survey.toMetadatum def
+                            Codec.toMetadatum def
 
                         -- CIP-179: owner key hash must be in required_signers
                         requiredSignerInfo =
@@ -1642,7 +1643,7 @@ viewCreateSurveyTab model =
             Ok def ->
                 div [ HA.class "metadatum-preview" ]
                     [ h3 [] [ text ("Preview: Metadatum (label " ++ String.fromInt ST.metadataLabel ++ ")") ]
-                    , pre [] [ text (metadatumToString (Survey.toMetadatum def)) ]
+                    , pre [] [ text (metadatumToString (Codec.toMetadatum def)) ]
                     ]
 
             Err _ ->
@@ -1759,7 +1760,7 @@ submitResponse model =
                                                 Ok encodedAnswers ->
                                                     let
                                                         plaintextHex =
-                                                            Survey.plaintextHexForAnswers cfg.paddingSize encodedAnswers
+                                                            Codec.plaintextHexForAnswers cfg.paddingSize encodedAnswers
 
                                                         ( newPool, cmd ) =
                                                             ConcurrentTask.attempt
@@ -1907,7 +1908,7 @@ submitCancellation model =
                             { txHash = target.txHash, index = target.index }
 
                         cancellationMeta =
-                            Survey.buildCancellationMetadatum surveyRef
+                            Codec.buildCancellationMetadatum surveyRef
 
                         requiredSignerInfo =
                             case target.definition.owner of

@@ -22,12 +22,12 @@ import Html exposing (Html, button, div, h1, h3, nav, p, pre, span, text)
 import Html.Attributes as HA
 import Html.Events exposing (onClick)
 import Http
-import Integer
 import Json.Decode as JD exposing (Decoder, Value)
 import Natural as N
 import RemoteData exposing (RemoteData(..), WebData)
 import Route
 import Survey.Codec as Codec
+import Survey.Csv as Csv
 import Survey.Form as Form
 import Survey.Types as ST exposing (BallotState(..), OnchainResponse, OnchainSurvey)
 import Survey.View as View
@@ -338,7 +338,7 @@ update msg model =
                 filename =
                     "survey-" ++ survey.txHash ++ "-" ++ String.fromInt survey.index ++ ".csv"
             in
-            ( model, File.Download.string filename "text/csv" (buildCsv model survey deduped) )
+            ( model, File.Download.string filename "text/csv" (Csv.buildCsv (revealedItems model) survey deduped) )
 
         TabClicked tab ->
             ( { model | activeTab = tab }, Cmd.none )
@@ -982,156 +982,6 @@ answerItemsOf : Model -> OnchainResponse -> List ST.AnswerItem
 answerItemsOf model resp =
     revealedItems model resp |> Maybe.withDefault []
 
-
-
--- CSV EXPORT
-
-
-{-| One row per (deduplicated) response: responder, role, then one cell per
-question. Choice answers use option labels; ranking uses "a > b > c"; numeric the
-value; custom a compact text/hex. Not-yet-revealed timelocked ballots export
-"encrypted" for every question cell.
--}
-buildCsv : Model -> OnchainSurvey -> List OnchainResponse -> String
-buildCsv model survey deduped =
-    let
-        questions =
-            survey.definition.questions
-
-        header =
-            "responder" :: "role" :: List.map questionPromptOf questions
-
-        row resp =
-            ST.credentialToHex resp.response.responder
-                :: ST.roleToString resp.response.role
-                :: answerCells model questions resp
-    in
-    String.join "\u{000D}\n" (csvRow header :: List.map (row >> csvRow) deduped)
-
-
-answerCells : Model -> List ST.SurveyQuestion -> OnchainResponse -> List String
-answerCells model questions resp =
-    case revealedItems model resp of
-        Just items ->
-            List.indexedMap (\qIdx q -> cellValue q (findAnswer qIdx items)) questions
-
-        Nothing ->
-            List.map (\_ -> "encrypted") questions
-
-
-findAnswer : Int -> List ST.AnswerItem -> Maybe ST.AnswerItem
-findAnswer qIdx items =
-    List.head (List.filter (\it -> answerQuestionIndex it == qIdx) items)
-
-
-answerQuestionIndex : ST.AnswerItem -> Int
-answerQuestionIndex item =
-    case item of
-        ST.AnswerSingleChoice q _ ->
-            q
-
-        ST.AnswerMultiSelect q _ ->
-            q
-
-        ST.AnswerRanking q _ ->
-            q
-
-        ST.AnswerNumeric q _ ->
-            q
-
-        ST.AnswerCustom q _ ->
-            q
-
-
-cellValue : ST.SurveyQuestion -> Maybe ST.AnswerItem -> String
-cellValue question maybeItem =
-    case maybeItem of
-        Nothing ->
-            ""
-
-        Just (ST.AnswerSingleChoice _ o) ->
-            optionLabel question o
-
-        Just (ST.AnswerMultiSelect _ os) ->
-            String.join "; " (List.map (optionLabel question) os)
-
-        Just (ST.AnswerRanking _ os) ->
-            String.join " > " (List.map (optionLabel question) os)
-
-        Just (ST.AnswerNumeric _ v) ->
-            String.fromInt v
-
-        Just (ST.AnswerCustom _ meta) ->
-            customCellValue meta
-
-
-optionLabel : ST.SurveyQuestion -> Int -> String
-optionLabel question optIdx =
-    let
-        options =
-            case question of
-                ST.SingleChoice r ->
-                    r.options
-
-                ST.MultiSelect r ->
-                    r.options
-
-                ST.Ranking r ->
-                    r.options
-
-                _ ->
-                    []
-    in
-    List.head (List.drop optIdx options) |> Maybe.withDefault (String.fromInt optIdx)
-
-
-questionPromptOf : ST.SurveyQuestion -> String
-questionPromptOf question =
-    case question of
-        ST.SingleChoice r ->
-            r.prompt
-
-        ST.MultiSelect r ->
-            r.prompt
-
-        ST.Ranking r ->
-            r.prompt
-
-        ST.NumericRange r ->
-            r.prompt
-
-        ST.Custom r ->
-            r.prompt
-
-
-customCellValue : Metadatum.Metadatum -> String
-customCellValue meta =
-    case meta of
-        Metadatum.String s ->
-            s
-
-        Metadatum.Bytes b ->
-            "0x" ++ Bytes.toHex (Bytes.toAny b)
-
-        Metadatum.Int i ->
-            String.fromInt (Integer.toInt i)
-
-        _ ->
-            "(custom)"
-
-
-csvRow : List String -> String
-csvRow fields =
-    String.join "," (List.map csvField fields)
-
-
-csvField : String -> String
-csvField s =
-    if String.contains "," s || String.contains "\"" s || String.contains "\n" s || String.contains "\u{000D}" s then
-        "\"" ++ String.replace "\"" "\"\"" s ++ "\""
-
-    else
-        s
 
 
 viewQuestionResult : List ST.AnswerItem -> Int -> ST.SurveyQuestion -> Html Msg

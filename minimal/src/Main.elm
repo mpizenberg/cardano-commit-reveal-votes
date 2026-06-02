@@ -18,6 +18,7 @@ import Cardano.Utxo as Utxo exposing (Output)
 import Cardano.Value as Value
 import ConcurrentTask
 import Dict exposing (Dict)
+import File.Download
 import Html exposing (Html, button, div, h1, h3, nav, p, pre, span, text)
 import Html.Attributes as HA
 import Html.Events exposing (onClick)
@@ -262,6 +263,7 @@ type Msg
     | TimelockEncrypted (ConcurrentTask.Response String { ciphertextHex : String })
     | RevealBallot String String
     | BallotDecrypted String (ConcurrentTask.Response String { plaintextHex : String })
+    | ExportCsv OnchainSurvey
 
 
 
@@ -408,6 +410,16 @@ update msg model =
                             DecryptError "Unexpected error during decryption"
             in
             ( { model | decryptedBallots = Dict.insert key state model.decryptedBallots }, Cmd.none )
+
+        ExportCsv survey ->
+            let
+                deduped =
+                    dedupLatestResponses model.surveyTxSlot (responsesForSurvey survey model.onchainResponses)
+
+                filename =
+                    "survey-" ++ survey.txHash ++ "-" ++ String.fromInt survey.index ++ ".csv"
+            in
+            ( model, File.Download.string filename "text/csv" (buildCsv model survey deduped) )
 
         TabClicked tab ->
             ( { model | activeTab = tab }, Cmd.none )
@@ -1010,27 +1022,195 @@ viewKioskResults model survey deduped =
             List.concatMap (answerItemsOf model) deduped
     in
     div [ HA.class "survey-card", HA.style "margin-top" "1rem" ]
-        [ h3 [] [ text "Results" ]
+        [ div [ HA.style "display" "flex", HA.style "justify-content" "space-between", HA.style "align-items" "center" ]
+            [ h3 [] [ text "Results" ]
+            , if List.isEmpty deduped then
+                text ""
+
+              else
+                button
+                    [ HA.class "btn btn-secondary"
+                    , onClick (ExportCsv survey)
+                    ]
+                    [ text "Export CSV" ]
+            ]
         , div [] (List.indexedMap (viewQuestionResult items) survey.definition.questions)
         ]
 
 
 {-| The flat answer items for one response: public answers directly, or a
-revealed (decrypted) timelocked ballot. Unrevealed timelocked ballots yield none.
+revealed (decrypted) timelocked ballot. `Nothing` means a timelocked ballot that
+is not yet revealed (distinct from "answered nothing").
 -}
-answerItemsOf : Model -> OnchainResponse -> List Survey.AnswerItem
-answerItemsOf model resp =
+revealedItems : Model -> OnchainResponse -> Maybe (List Survey.AnswerItem)
+revealedItems model resp =
     case resp.response.answers of
         Survey.PublicAnswers answerItems ->
-            answerItems
+            Just answerItems
 
         Survey.TimelockedAnswers _ ->
             case Dict.get (ballotKey resp) model.decryptedBallots of
                 Just (Decrypted answerItems) ->
-                    answerItems
+                    Just answerItems
+
+                _ ->
+                    Nothing
+
+
+answerItemsOf : Model -> OnchainResponse -> List Survey.AnswerItem
+answerItemsOf model resp =
+    revealedItems model resp |> Maybe.withDefault []
+
+
+
+-- CSV EXPORT
+
+
+{-| One row per (deduplicated) response: responder, role, then one cell per
+question. Choice answers use option labels; ranking uses "a > b > c"; numeric the
+value; custom a compact text/hex. Not-yet-revealed timelocked ballots export
+"encrypted" for every question cell.
+-}
+buildCsv : Model -> OnchainSurvey -> List OnchainResponse -> String
+buildCsv model survey deduped =
+    let
+        questions =
+            survey.definition.questions
+
+        header =
+            "responder" :: "role" :: List.map questionPromptOf questions
+
+        row resp =
+            Survey.credentialToHex resp.response.responder
+                :: Survey.roleToString resp.response.role
+                :: answerCells model questions resp
+    in
+    String.join "\u{000D}\n" (csvRow header :: List.map (row >> csvRow) deduped)
+
+
+answerCells : Model -> List Survey.SurveyQuestion -> OnchainResponse -> List String
+answerCells model questions resp =
+    case revealedItems model resp of
+        Just items ->
+            List.indexedMap (\qIdx q -> cellValue q (findAnswer qIdx items)) questions
+
+        Nothing ->
+            List.map (\_ -> "encrypted") questions
+
+
+findAnswer : Int -> List Survey.AnswerItem -> Maybe Survey.AnswerItem
+findAnswer qIdx items =
+    List.head (List.filter (\it -> answerQuestionIndex it == qIdx) items)
+
+
+answerQuestionIndex : Survey.AnswerItem -> Int
+answerQuestionIndex item =
+    case item of
+        Survey.AnswerSingleChoice q _ ->
+            q
+
+        Survey.AnswerMultiSelect q _ ->
+            q
+
+        Survey.AnswerRanking q _ ->
+            q
+
+        Survey.AnswerNumeric q _ ->
+            q
+
+        Survey.AnswerCustom q _ ->
+            q
+
+
+cellValue : Survey.SurveyQuestion -> Maybe Survey.AnswerItem -> String
+cellValue question maybeItem =
+    case maybeItem of
+        Nothing ->
+            ""
+
+        Just (Survey.AnswerSingleChoice _ o) ->
+            optionLabel question o
+
+        Just (Survey.AnswerMultiSelect _ os) ->
+            String.join "; " (List.map (optionLabel question) os)
+
+        Just (Survey.AnswerRanking _ os) ->
+            String.join " > " (List.map (optionLabel question) os)
+
+        Just (Survey.AnswerNumeric _ v) ->
+            String.fromInt v
+
+        Just (Survey.AnswerCustom _ meta) ->
+            customCellValue meta
+
+
+optionLabel : Survey.SurveyQuestion -> Int -> String
+optionLabel question optIdx =
+    let
+        options =
+            case question of
+                Survey.SingleChoice r ->
+                    r.options
+
+                Survey.MultiSelect r ->
+                    r.options
+
+                Survey.Ranking r ->
+                    r.options
 
                 _ ->
                     []
+    in
+    List.head (List.drop optIdx options) |> Maybe.withDefault (String.fromInt optIdx)
+
+
+questionPromptOf : Survey.SurveyQuestion -> String
+questionPromptOf question =
+    case question of
+        Survey.SingleChoice r ->
+            r.prompt
+
+        Survey.MultiSelect r ->
+            r.prompt
+
+        Survey.Ranking r ->
+            r.prompt
+
+        Survey.NumericRange r ->
+            r.prompt
+
+        Survey.Custom r ->
+            r.prompt
+
+
+customCellValue : Metadatum.Metadatum -> String
+customCellValue meta =
+    case meta of
+        Metadatum.String s ->
+            s
+
+        Metadatum.Bytes b ->
+            "0x" ++ Bytes.toHex (Bytes.toAny b)
+
+        Metadatum.Int i ->
+            String.fromInt (Integer.toInt i)
+
+        _ ->
+            "(custom)"
+
+
+csvRow : List String -> String
+csvRow fields =
+    String.join "," (List.map csvField fields)
+
+
+csvField : String -> String
+csvField s =
+    if String.contains "," s || String.contains "\"" s || String.contains "\n" s || String.contains "\u{000D}" s then
+        "\"" ++ String.replace "\"" "\"\"" s ++ "\""
+
+    else
+        s
 
 
 viewQuestionResult : List Survey.AnswerItem -> Int -> Survey.SurveyQuestion -> Html Msg

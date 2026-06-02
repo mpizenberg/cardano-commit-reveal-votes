@@ -29,7 +29,7 @@ import Cardano.Address exposing (Credential(..))
 import Cardano.Metadatum exposing (Metadatum(..))
 import List.Extra
 import Survey.Codec exposing (maxPlaintextSize, metaInt, metaStr, responseEnvelope, resultApply, traverseResults)
-import Survey.Types exposing (..)
+import Survey.Types exposing (BallotMode(..), Role(..), SurveyDefinition, SurveyQuestion(..), SurveyRef, WeightingMode(..), allRoles, allowedWeightings, quicknetChainHashHex, stringToRole, stringToWeightingMode)
 import Tlock
 
 
@@ -374,7 +374,6 @@ questionTypeToValue qt =
 
         CustomType ->
             "custom"
-
 
 
 

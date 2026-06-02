@@ -872,16 +872,6 @@ viewKioskSurvey model survey =
             List.any (\ref -> ref.txHash == survey.txHash && ref.index == survey.index)
                 model.onchainCancellations
 
-        -- Open while current epoch is at or before endEpoch (inclusive cutoff).
-        -- If the epoch hasn't loaded, don't block responding; on-chain rules apply.
-        isOpen =
-            case RemoteData.toMaybe model.epoch of
-                Just currentEpoch ->
-                    currentEpoch <= survey.definition.endEpoch
-
-                Nothing ->
-                    True
-
         deduped =
             dedupLatestResponses model.surveyTxSlot (responsesForSurvey survey model.onchainResponses)
     in
@@ -905,22 +895,34 @@ viewKioskSurvey model survey =
             -- No response form when cancelled, so show the definition on its own.
             View.viewSurvey survey.definition
 
-          else if isOpen then
-            div []
-                [ View.viewResponseForm
-                    survey.definition
-                    model.responseForm
-                    model.responseFormError
-                    (submitButtonLabel "Connect wallet to respond" "Submit Response On-Chain" model)
-                    ResponseFormMsg
-                , viewSubmissionStatus model.submissionStatus
-                ]
-
           else
-            div []
-                [ View.viewSurvey survey.definition
-                , p [ HA.class "meta" ] [ text "This survey is closed; responses are no longer accepted." ]
-                ]
+            let
+                -- Open while current epoch is at or before endEpoch (inclusive cutoff).
+                -- If the epoch hasn't loaded, don't block responding; on-chain rules apply.
+                isOpen =
+                    case RemoteData.toMaybe model.epoch of
+                        Just currentEpoch ->
+                            currentEpoch <= survey.definition.endEpoch
+
+                        Nothing ->
+                            True
+            in
+            if isOpen then
+                div []
+                    [ View.viewResponseForm
+                        survey.definition
+                        model.responseForm
+                        model.responseFormError
+                        (submitButtonLabel "Connect wallet to respond" "Submit Response On-Chain" model)
+                        ResponseFormMsg
+                    , viewSubmissionStatus model.submissionStatus
+                    ]
+
+            else
+                div []
+                    [ View.viewSurvey survey.definition
+                    , p [ HA.class "meta" ] [ text "This survey is closed; responses are no longer accepted." ]
+                    ]
         , if isCancelled then
             text ""
 
@@ -1321,15 +1323,15 @@ viewNoAggregation prompt label =
 
 viewStatusLine : Model -> OnchainSurvey -> Html Msg
 viewStatusLine model survey =
-    let
-        endEpoch =
-            survey.definition.endEpoch
-    in
     case RemoteData.toMaybe model.epoch of
         Nothing ->
             p [ HA.class "meta" ] [ text "Status: unknown (epoch not loaded)" ]
 
         Just currentEpoch ->
+            let
+                endEpoch =
+                    survey.definition.endEpoch
+            in
             if currentEpoch <= endEpoch then
                 p [ HA.class "meta" ]
                     [ text
@@ -1534,9 +1536,6 @@ viewSurveysTab model =
         isCancelled survey =
             List.any (\ref -> ref.txHash == survey.txHash && ref.index == survey.index)
                 model.onchainCancellations
-
-        currentEpoch =
-            RemoteData.withDefault 0 model.epoch
     in
     div []
         [ case model.onchainSurveys of
@@ -1551,6 +1550,9 @@ viewSurveysTab model =
 
             Success allSurveys ->
                 let
+                    currentEpoch =
+                        RemoteData.withDefault 0 model.epoch
+
                     surveys =
                         List.filter (\s -> s.definition.endEpoch >= currentEpoch) allSurveys
 

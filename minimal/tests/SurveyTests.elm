@@ -1,12 +1,12 @@
 module SurveyTests exposing (suite)
 
-{-| Checks that `Survey.maxPlaintextSize` is a correct upper bound on the actual
-CBOR size of a ballot.
+{-| Checks that `Survey.Codec.maxPlaintextSize` is a correct upper bound on the
+actual CBOR size of a ballot.
 
 The actual size comes from the real CBOR encoder (`Cbor.Encode` +
-`Metadatum.toCbor`), exactly as `Survey.plaintextHexForAnswers` produces it, so
-these tests independently validate the hand-rolled width arithmetic
-(`cborUintWidth` / `cborIntWidth`) in `Survey`.
+`Metadatum.toCbor`), exactly as `Survey.Codec.plaintextHexForAnswers` produces
+it, so these tests independently validate the hand-rolled width arithmetic
+(`cborUintWidth` / `cborIntWidth`) in `Survey.Codec`.
 
 -}
 
@@ -16,7 +16,8 @@ import Cbor.Encode
 import Expect
 import Fuzz exposing (Fuzzer)
 import Integer
-import Survey exposing (SurveyQuestion(..), maxPlaintextSize)
+import Survey.Codec exposing (maxPlaintextSize)
+import Survey.Types exposing (SurveyQuestion(..))
 import Test exposing (Test, describe, fuzz, test)
 
 

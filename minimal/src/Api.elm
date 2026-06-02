@@ -13,7 +13,7 @@ import Json.Decode as JD exposing (Decoder)
 import Json.Encode as JE
 import ProposalMetadata exposing (ProposalMetadata)
 import RemoteData exposing (RemoteData)
-import Survey
+import Survey.Types as Survey
 
 
 {-| Free Tier Koios API token.

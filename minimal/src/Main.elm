@@ -28,6 +28,7 @@ import Json.Decode as JD exposing (Decoder, Value)
 import Natural as N
 import RemoteData exposing (RemoteData(..), WebData)
 import Survey
+import Survey.Types as ST
 import Task
 import Time
 import Tlock
@@ -65,23 +66,23 @@ type Tab
 type SubmissionStatus
     = NotSubmitting
     | EncryptingBallot
-    | WaitingForSignature { tx : Transaction, createdSurvey : Maybe Survey.SurveyDefinition }
-    | WaitingForSubmission { tx : Transaction, createdSurvey : Maybe Survey.SurveyDefinition }
-    | Submitted { txId : String, createdSurvey : Maybe Survey.SurveyDefinition }
+    | WaitingForSignature { tx : Transaction, createdSurvey : Maybe ST.SurveyDefinition }
+    | WaitingForSubmission { tx : Transaction, createdSurvey : Maybe ST.SurveyDefinition }
+    | Submitted { txId : String, createdSurvey : Maybe ST.SurveyDefinition }
     | SubmissionError String
 
 
 type alias OnchainSurvey =
     { txHash : String
     , index : Int
-    , definition : Survey.SurveyDefinition
+    , definition : ST.SurveyDefinition
     }
 
 
 type alias OnchainResponse =
     { txHash : String
     , ballotIndex : Int
-    , response : Survey.SurveyResponse
+    , response : ST.SurveyResponse
     }
 
 
@@ -89,7 +90,7 @@ type alias OnchainResponse =
 -}
 type BallotState
     = Decrypting
-    | Decrypted (List Survey.AnswerItem)
+    | Decrypted (List ST.AnswerItem)
     | DecryptError String
 
 
@@ -105,7 +106,7 @@ type alias Flags =
 type SurveyFocus
     = NoFocus
     | InvalidFocus String
-    | Focus Survey.SurveyRef
+    | Focus ST.SurveyRef
 
 
 type alias Model =
@@ -122,10 +123,10 @@ type alias Model =
     , activeTab : Tab
     , surveyForm : Survey.SurveyForm
     , surveyFormError : Maybe String
-    , createdSurveys : List Survey.SurveyDefinition
+    , createdSurveys : List ST.SurveyDefinition
     , onchainSurveys : WebData (List OnchainSurvey)
     , onchainResponses : List OnchainResponse
-    , onchainCancellations : List Survey.SurveyRef
+    , onchainCancellations : List ST.SurveyRef
     , surveyTxSlot : Dict String Int
     , walletUtxos : Maybe (Utxo.RefDict Output)
     , submissionStatus : SubmissionStatus
@@ -525,7 +526,7 @@ update msg model =
                             List.concatMap
                                 (\( txMeta, payload ) ->
                                     case payload of
-                                        Survey.ParsedDefinitions defs ->
+                                        ST.ParsedDefinitions defs ->
                                             List.indexedMap
                                                 (\i def ->
                                                     { txHash = txMeta.txHash
@@ -544,7 +545,7 @@ update msg model =
                             List.concatMap
                                 (\( txMeta, payload ) ->
                                     case payload of
-                                        Survey.ParsedResponses resps ->
+                                        ST.ParsedResponses resps ->
                                             List.indexedMap
                                                 (\i r -> { txHash = txMeta.txHash, ballotIndex = i, response = r })
                                                 resps
@@ -558,7 +559,7 @@ update msg model =
                             List.concatMap
                                 (\( _, payload ) ->
                                     case payload of
-                                        Survey.ParsedCancellations refs ->
+                                        ST.ParsedCancellations refs ->
                                             refs
 
                                         _ ->
@@ -625,7 +626,7 @@ submitSurvey model =
 
                         txResult =
                             TxIntent.finalize utxos
-                                (TxMetadata { tag = N.fromSafeInt Survey.metadataLabel, metadata = surveyMetadatum }
+                                (TxMetadata { tag = N.fromSafeInt ST.metadataLabel, metadata = surveyMetadatum }
                                     :: requiredSignerInfo
                                 )
                                 [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
@@ -838,7 +839,7 @@ viewInvalidLink msg =
 on-chain surveys and renders that one survey. Fill form, responses, and stats are
 layered on in later steps.
 -}
-viewKiosk : Model -> Survey.SurveyRef -> Html Msg
+viewKiosk : Model -> ST.SurveyRef -> Html Msg
 viewKiosk model ref =
     case model.onchainSurveys of
         NotAsked ->
@@ -955,10 +956,10 @@ nothing for public surveys.
 viewRevealProgress : Model -> OnchainSurvey -> List OnchainResponse -> Html Msg
 viewRevealProgress model survey deduped =
     case survey.definition.ballotMode of
-        Survey.Public ->
+        ST.Public ->
             text ""
 
-        Survey.Timelocked cfg ->
+        ST.Timelocked cfg ->
             let
                 revealTime =
                     Tlock.revealTimeOf cfg.round
@@ -1042,13 +1043,13 @@ viewKioskResults model survey deduped =
 revealed (decrypted) timelocked ballot. `Nothing` means a timelocked ballot that
 is not yet revealed (distinct from "answered nothing").
 -}
-revealedItems : Model -> OnchainResponse -> Maybe (List Survey.AnswerItem)
+revealedItems : Model -> OnchainResponse -> Maybe (List ST.AnswerItem)
 revealedItems model resp =
     case resp.response.answers of
-        Survey.PublicAnswers answerItems ->
+        ST.PublicAnswers answerItems ->
             Just answerItems
 
-        Survey.TimelockedAnswers _ ->
+        ST.TimelockedAnswers _ ->
             case Dict.get (ballotKey resp) model.decryptedBallots of
                 Just (Decrypted answerItems) ->
                     Just answerItems
@@ -1057,7 +1058,7 @@ revealedItems model resp =
                     Nothing
 
 
-answerItemsOf : Model -> OnchainResponse -> List Survey.AnswerItem
+answerItemsOf : Model -> OnchainResponse -> List ST.AnswerItem
 answerItemsOf model resp =
     revealedItems model resp |> Maybe.withDefault []
 
@@ -1081,14 +1082,14 @@ buildCsv model survey deduped =
             "responder" :: "role" :: List.map questionPromptOf questions
 
         row resp =
-            Survey.credentialToHex resp.response.responder
-                :: Survey.roleToString resp.response.role
+            ST.credentialToHex resp.response.responder
+                :: ST.roleToString resp.response.role
                 :: answerCells model questions resp
     in
     String.join "\u{000D}\n" (csvRow header :: List.map (row >> csvRow) deduped)
 
 
-answerCells : Model -> List Survey.SurveyQuestion -> OnchainResponse -> List String
+answerCells : Model -> List ST.SurveyQuestion -> OnchainResponse -> List String
 answerCells model questions resp =
     case revealedItems model resp of
         Just items ->
@@ -1098,64 +1099,64 @@ answerCells model questions resp =
             List.map (\_ -> "encrypted") questions
 
 
-findAnswer : Int -> List Survey.AnswerItem -> Maybe Survey.AnswerItem
+findAnswer : Int -> List ST.AnswerItem -> Maybe ST.AnswerItem
 findAnswer qIdx items =
     List.head (List.filter (\it -> answerQuestionIndex it == qIdx) items)
 
 
-answerQuestionIndex : Survey.AnswerItem -> Int
+answerQuestionIndex : ST.AnswerItem -> Int
 answerQuestionIndex item =
     case item of
-        Survey.AnswerSingleChoice q _ ->
+        ST.AnswerSingleChoice q _ ->
             q
 
-        Survey.AnswerMultiSelect q _ ->
+        ST.AnswerMultiSelect q _ ->
             q
 
-        Survey.AnswerRanking q _ ->
+        ST.AnswerRanking q _ ->
             q
 
-        Survey.AnswerNumeric q _ ->
+        ST.AnswerNumeric q _ ->
             q
 
-        Survey.AnswerCustom q _ ->
+        ST.AnswerCustom q _ ->
             q
 
 
-cellValue : Survey.SurveyQuestion -> Maybe Survey.AnswerItem -> String
+cellValue : ST.SurveyQuestion -> Maybe ST.AnswerItem -> String
 cellValue question maybeItem =
     case maybeItem of
         Nothing ->
             ""
 
-        Just (Survey.AnswerSingleChoice _ o) ->
+        Just (ST.AnswerSingleChoice _ o) ->
             optionLabel question o
 
-        Just (Survey.AnswerMultiSelect _ os) ->
+        Just (ST.AnswerMultiSelect _ os) ->
             String.join "; " (List.map (optionLabel question) os)
 
-        Just (Survey.AnswerRanking _ os) ->
+        Just (ST.AnswerRanking _ os) ->
             String.join " > " (List.map (optionLabel question) os)
 
-        Just (Survey.AnswerNumeric _ v) ->
+        Just (ST.AnswerNumeric _ v) ->
             String.fromInt v
 
-        Just (Survey.AnswerCustom _ meta) ->
+        Just (ST.AnswerCustom _ meta) ->
             customCellValue meta
 
 
-optionLabel : Survey.SurveyQuestion -> Int -> String
+optionLabel : ST.SurveyQuestion -> Int -> String
 optionLabel question optIdx =
     let
         options =
             case question of
-                Survey.SingleChoice r ->
+                ST.SingleChoice r ->
                     r.options
 
-                Survey.MultiSelect r ->
+                ST.MultiSelect r ->
                     r.options
 
-                Survey.Ranking r ->
+                ST.Ranking r ->
                     r.options
 
                 _ ->
@@ -1164,22 +1165,22 @@ optionLabel question optIdx =
     List.head (List.drop optIdx options) |> Maybe.withDefault (String.fromInt optIdx)
 
 
-questionPromptOf : Survey.SurveyQuestion -> String
+questionPromptOf : ST.SurveyQuestion -> String
 questionPromptOf question =
     case question of
-        Survey.SingleChoice r ->
+        ST.SingleChoice r ->
             r.prompt
 
-        Survey.MultiSelect r ->
+        ST.MultiSelect r ->
             r.prompt
 
-        Survey.Ranking r ->
+        ST.Ranking r ->
             r.prompt
 
-        Survey.NumericRange r ->
+        ST.NumericRange r ->
             r.prompt
 
-        Survey.Custom r ->
+        ST.Custom r ->
             r.prompt
 
 
@@ -1213,33 +1214,33 @@ csvField s =
         s
 
 
-viewQuestionResult : List Survey.AnswerItem -> Int -> Survey.SurveyQuestion -> Html Msg
+viewQuestionResult : List ST.AnswerItem -> Int -> ST.SurveyQuestion -> Html Msg
 viewQuestionResult items qIdx question =
     case question of
-        Survey.SingleChoice { prompt, options } ->
+        ST.SingleChoice { prompt, options } ->
             viewChoiceTally prompt options (singleChoiceCounts qIdx options items)
 
-        Survey.MultiSelect { prompt, options } ->
+        ST.MultiSelect { prompt, options } ->
             viewChoiceTally prompt options (multiSelectCounts qIdx options items)
 
-        Survey.Ranking { prompt } ->
+        ST.Ranking { prompt } ->
             viewNoAggregation prompt "Ranking"
 
-        Survey.NumericRange { prompt } ->
+        ST.NumericRange { prompt } ->
             viewNoAggregation prompt "Numeric"
 
-        Survey.Custom { prompt } ->
+        ST.Custom { prompt } ->
             viewNoAggregation prompt "Custom"
 
 
-singleChoiceCounts : Int -> List String -> List Survey.AnswerItem -> List Int
+singleChoiceCounts : Int -> List String -> List ST.AnswerItem -> List Int
 singleChoiceCounts qIdx options items =
     let
         selected =
             List.filterMap
                 (\it ->
                     case it of
-                        Survey.AnswerSingleChoice q o ->
+                        ST.AnswerSingleChoice q o ->
                             if q == qIdx then
                                 Just o
 
@@ -1254,14 +1255,14 @@ singleChoiceCounts qIdx options items =
     List.indexedMap (\optIdx _ -> List.length (List.filter ((==) optIdx) selected)) options
 
 
-multiSelectCounts : Int -> List String -> List Survey.AnswerItem -> List Int
+multiSelectCounts : Int -> List String -> List ST.AnswerItem -> List Int
 multiSelectCounts qIdx options items =
     let
         selected =
             List.concatMap
                 (\it ->
                     case it of
-                        Survey.AnswerMultiSelect q os ->
+                        ST.AnswerMultiSelect q os ->
                             if q == qIdx then
                                 os
 
@@ -1349,7 +1350,7 @@ viewParticipationByRole responses =
         counts =
             List.foldl
                 (\r acc ->
-                    Dict.update (Survey.roleToString r.response.role)
+                    Dict.update (ST.roleToString r.response.role)
                         (\m -> Just (1 + Maybe.withDefault 0 m))
                         acc
                 )
@@ -1386,7 +1387,7 @@ dedupLatestResponses : Dict String Int -> List OnchainResponse -> List OnchainRe
 dedupLatestResponses txSlot responses =
     let
         key r =
-            Survey.roleToString r.response.role ++ "|" ++ Survey.credentialToHex r.response.responder
+            ST.roleToString r.response.role ++ "|" ++ ST.credentialToHex r.response.responder
 
         -- Larger tuple = more recent: higher absolute slot, then higher ballotIndex.
         recency r =
@@ -1624,7 +1625,7 @@ viewCancelledSurvey survey =
         , p [ HA.class "meta" ]
             [ text ("Tx: " ++ survey.txHash ++ " [" ++ String.fromInt survey.index ++ "]") ]
         , p [ HA.class "meta" ]
-            [ text ("Owner: " ++ Survey.credentialToHex survey.definition.owner) ]
+            [ text ("Owner: " ++ ST.credentialToHex survey.definition.owner) ]
         ]
 
 
@@ -1640,7 +1641,7 @@ viewCreateSurveyTab model =
         , case Survey.formToDefinition model.currentTime model.surveyForm of
             Ok def ->
                 div [ HA.class "metadatum-preview" ]
-                    [ h3 [] [ text ("Preview: Metadatum (label " ++ String.fromInt Survey.metadataLabel ++ ")") ]
+                    [ h3 [] [ text ("Preview: Metadatum (label " ++ String.fromInt ST.metadataLabel ++ ")") ]
                     , pre [] [ text (metadatumToString (Survey.toMetadatum def)) ]
                     ]
 
@@ -1737,7 +1738,7 @@ submitResponse model =
 
                         Just cred ->
                             case target.definition.ballotMode of
-                                Survey.Public ->
+                                ST.Public ->
                                     case Survey.buildResponseMetadatum { txHash = target.txHash, index = target.index } cred model.responseForm of
                                         Err err ->
                                             ( { model | responseFormError = Just err }, Cmd.none )
@@ -1745,7 +1746,7 @@ submitResponse model =
                                         Ok responseMeta ->
                                             buildSignResponseTx model responseMeta
 
-                                Survey.Timelocked cfg ->
+                                ST.Timelocked cfg ->
                                     case model.responseForm.role of
                                         Nothing ->
                                             ( { model | responseFormError = Just "Please select a role" }, Cmd.none )
@@ -1804,7 +1805,7 @@ buildSignResponseTx model responseMeta =
 
                         txResult =
                             TxIntent.finalize utxos
-                                (TxMetadata { tag = N.fromSafeInt Survey.metadataLabel, metadata = responseMeta }
+                                (TxMetadata { tag = N.fromSafeInt ST.metadataLabel, metadata = responseMeta }
                                     :: requiredSignerInfo
                                 )
                                 [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
@@ -1838,12 +1839,12 @@ viewCancelSurveyTab model =
         Just target ->
             let
                 ownerHex =
-                    Survey.credentialToHex target.definition.owner
+                    ST.credentialToHex target.definition.owner
 
                 walletCredHex =
                     model.wallet
                         |> Maybe.andThen (\w -> Cardano.Address.extractPaymentCred (Cip30.walletChangeAddress w))
-                        |> Maybe.map Survey.credentialToHex
+                        |> Maybe.map ST.credentialToHex
 
                 ownerMatches =
                     walletCredHex == Just ownerHex
@@ -1918,7 +1919,7 @@ submitCancellation model =
 
                         txResult =
                             TxIntent.finalize utxos
-                                (TxMetadata { tag = N.fromSafeInt Survey.metadataLabel, metadata = cancellationMeta }
+                                (TxMetadata { tag = N.fromSafeInt ST.metadataLabel, metadata = cancellationMeta }
                                     :: requiredSignerInfo
                                 )
                                 [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
@@ -1986,7 +1987,7 @@ viewResponsesTab model =
 
 type alias ResponseGroup =
     { survey : Maybe OnchainSurvey
-    , surveyRef : Survey.SurveyRef
+    , surveyRef : ST.SurveyRef
     , responses : List OnchainResponse
     }
 
@@ -2055,20 +2056,20 @@ viewResponseGroup model group =
         ]
 
 
-viewResponse : Model -> Maybe Survey.SurveyDefinition -> OnchainResponse -> Html Msg
+viewResponse : Model -> Maybe ST.SurveyDefinition -> OnchainResponse -> Html Msg
 viewResponse model maybeDef resp =
     let
         r =
             resp.response
     in
     div [ HA.class "survey-card" ]
-        [ p [ HA.class "meta" ] [ text ("Responder: " ++ Survey.credentialToHex r.responder) ]
-        , p [ HA.class "meta" ] [ text ("Role: " ++ Survey.roleToString r.role) ]
+        [ p [ HA.class "meta" ] [ text ("Responder: " ++ ST.credentialToHex r.responder) ]
+        , p [ HA.class "meta" ] [ text ("Role: " ++ ST.roleToString r.role) ]
         , case r.answers of
-            Survey.PublicAnswers items ->
+            ST.PublicAnswers items ->
                 Survey.viewAnswerItems maybeDef items
 
-            Survey.TimelockedAnswers blob ->
+            ST.TimelockedAnswers blob ->
                 viewTimelockedAnswers model maybeDef resp blob
         ]
 
@@ -2082,10 +2083,10 @@ ballotKey resp =
     resp.txHash ++ ":" ++ String.fromInt resp.ballotIndex
 
 
-viewTimelockedAnswers : Model -> Maybe Survey.SurveyDefinition -> OnchainResponse -> Bytes.Bytes Bytes.Any -> Html Msg
+viewTimelockedAnswers : Model -> Maybe ST.SurveyDefinition -> OnchainResponse -> Bytes.Bytes Bytes.Any -> Html Msg
 viewTimelockedAnswers model maybeDef resp blob =
     case Maybe.map .ballotMode maybeDef of
-        Just (Survey.Timelocked cfg) ->
+        Just (ST.Timelocked cfg) ->
             let
                 revealTime =
                     Tlock.revealTimeOf cfg.round

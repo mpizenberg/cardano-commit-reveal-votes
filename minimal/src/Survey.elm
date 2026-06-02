@@ -14,7 +14,7 @@ module Survey exposing
     , RoleWeightingEntry
     , SurveyDefinition
     , SurveyForm
-    , SurveyQuestion
+    , SurveyQuestion(..)
     , SurveyRef
     , SurveyResponse
     , TimelockConfig
@@ -29,6 +29,7 @@ module Survey exposing
     , formToDefinition
     , fromMetadatum
     , initResponseForm
+    , maxPlaintextSize
     , metadataLabel
     , plaintextHexForAnswers
     , roleToString
@@ -1162,7 +1163,7 @@ emptyForm =
     , ownerKeyHash = ""
     , timelocked = False
     , revealMinutes = "5"
-    , paddingSize = "64"
+    , paddingSize = ""
     }
 
 
@@ -1393,6 +1394,16 @@ weightingModeToValue wm =
 -- ============================================================
 
 
+{-| Best-effort worst-case ballot size for the form's current questions, used to
+display the auto padding default. `Nothing` while questions are still invalid.
+-}
+formMaxPlaintextSize : SurveyForm -> Maybe Int
+formMaxPlaintextSize form =
+    traverseResults validateQuestion form.questions
+        |> Result.map maxPlaintextSize
+        |> Result.toMaybe
+
+
 formToDefinition : Int -> SurveyForm -> Result String SurveyDefinition
 formToDefinition nowUnix form =
     let
@@ -1453,6 +1464,17 @@ formToDefinition nowUnix form =
 
         validateBallotMode =
             if form.timelocked then
+                let
+                    validatePadding =
+                        if String.isEmpty (String.trim form.paddingSize) then
+                            validateQuestions
+                                |> Result.map maxPlaintextSize
+                                |> Result.withDefault 0
+                                |> Ok
+
+                        else
+                            validatePositiveInt "Padding size must be a positive number of bytes" form.paddingSize
+                in
                 Result.map2
                     (\minutes padding ->
                         let
@@ -1466,7 +1488,7 @@ formToDefinition nowUnix form =
                             }
                     )
                     (validatePositiveInt "Reveal delay must be a positive number of minutes" form.revealMinutes)
-                    (validatePositiveInt "Padding size must be a positive number of bytes" form.paddingSize)
+                    validatePadding
 
             else
                 Ok Public
@@ -1816,10 +1838,19 @@ viewBallotModeForm nowUnix form toMsg =
                         , input
                             [ HA.type_ "number"
                             , HA.value form.paddingSize
-                            , HA.placeholder "e.g. 64"
+                            , HA.placeholder
+                                (case formMaxPlaintextSize form of
+                                    Just n ->
+                                        "auto: " ++ String.fromInt n
+
+                                    Nothing ->
+                                        "auto"
+                                )
                             , HE.onInput (toMsg << SetPaddingSize)
                             ]
                             []
+                        , p [ HA.class "meta" ]
+                            [ text "Leave blank to auto-size to the largest possible ballot, so every ciphertext is the same length." ]
                         ]
                     ]
                 , case String.toInt form.revealMinutes of
@@ -2267,6 +2298,100 @@ responseEnvelope surveyRef role responder answersMeta =
                 ]
             ]
         ]
+
+
+{-| Worst-case CBOR size (bytes) of a fully-answered ballot for these questions:
+every question answered with its largest-encoding answer. Used as the default
+padding size so all ciphertexts for a survey share one length and thus leak
+nothing about their content.
+
+Estimation rules:
+
+  - Free-text (`Custom`) answers count as the empty string `""`, since their
+    length is unbounded.
+  - Numeric answers take the wider of the two range bounds (CBOR encodes a
+    negative `v` via the magnitude `-1 - v`), capped at the 64-bit form.
+  - Choice indices are bounded by the option count; multi-select / ranking lists
+    are bounded by their max-selections / max-ranked limit.
+
+-}
+maxPlaintextSize : List SurveyQuestion -> Int
+maxPlaintextSize questions =
+    cborUintWidth (List.length questions)
+        + List.sum (List.indexedMap maxAnswerItemSize questions)
+
+
+{-| Worst-case CBOR size of one answer item `[tag, qIdx, value]`.
+-}
+maxAnswerItemSize : Int -> SurveyQuestion -> Int
+maxAnswerItemSize qIdx question =
+    let
+        valueWidth =
+            case question of
+                SingleChoice { options } ->
+                    cborUintWidth (Basics.max 0 (List.length options - 1))
+
+                MultiSelect { options, maxSelections } ->
+                    cborChoiceListWidth (List.length options) maxSelections
+
+                Ranking { options, maxRanked } ->
+                    cborChoiceListWidth (List.length options) maxRanked
+
+                NumericRange { constraints } ->
+                    Basics.max
+                        (cborIntWidth constraints.minValue)
+                        (cborIntWidth constraints.maxValue)
+
+                Custom _ ->
+                    1
+    in
+    -- 1 (array-3 header) + 1 (tag, always < 24) + qIdx + value
+    2 + cborUintWidth qIdx + valueWidth
+
+
+{-| Worst-case CBOR size of a list of choice indices: at most `limit` indices,
+each no larger than `optionCount - 1`.
+-}
+cborChoiceListWidth : Int -> Int -> Int
+cborChoiceListWidth optionCount limit =
+    let
+        count =
+            Basics.min limit optionCount
+    in
+    cborUintWidth count + count * cborUintWidth (Basics.max 0 (optionCount - 1))
+
+
+{-| Bytes to CBOR-encode a non-negative integer (also the header width for array
+and string lengths). Capped at the 64-bit form (9 bytes).
+-}
+cborUintWidth : Int -> Int
+cborUintWidth n =
+    if n < 24 then
+        1
+
+    else if n < 256 then
+        2
+
+    else if n < 65536 then
+        3
+
+    else if n < 4294967296 then
+        5
+
+    else
+        9
+
+
+{-| Bytes to CBOR-encode a possibly-negative integer. A negative `v` encodes the
+magnitude `-1 - v`. Capped at the 64-bit form (9 bytes).
+-}
+cborIntWidth : Int -> Int
+cborIntWidth v =
+    if v >= 0 then
+        cborUintWidth v
+
+    else
+        cborUintWidth (negate v - 1)
 
 
 {-| CBOR-encode the answer list and zero-pad it up to `paddingSize` bytes, ready

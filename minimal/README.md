@@ -139,6 +139,48 @@ The task ports are managed by `elm-concurrent-task` and carry batched async oper
 The `Storage` module uses them to read/write IndexedDB via the custom task handlers
 registered in `index.html`.
 
+### Timelocked ballots and padding
+
+A survey can be created with **timelocked ballots**: each response's answers are
+encrypted at submission with Drand `tlock` (quicknet) and only become decryptable
+once a chosen Drand round publishes. This is a *delayed reveal*, not permanent
+secrecy -- after the round, anyone can decrypt every ballot. The crypto runs in
+JS (`static/tlock.js`) and is reached from Elm through two `elm-concurrent-task`
+tasks (`tlock:encrypt` / `tlock:decrypt`, see `Tlock.elm`).
+
+**Why padding.** The encrypted blob's length leaks information: a longer
+ciphertext means a longer plaintext, which can reveal *how much* a voter
+answered (e.g. how many options they selected). To avoid this, the CBOR-encoded
+answers are zero-padded up to a fixed `paddingSize` before encryption
+(`Survey.plaintextHexForAnswers`). Decryption ignores the trailing zeros because
+the CBOR answer array is self-delimiting. The padding size is stored once per
+survey in its on-chain metadata, so every ballot for that survey shares it.
+
+**Choosing the size automatically.** Leaving the "Padding size" field blank uses
+`Survey.maxPlaintextSize`, the worst-case CBOR size of a *fully answered* ballot
+for that survey's questions. Padding every ballot up to this value makes all
+ciphertexts the same length, so size leaks nothing. The estimate sums a
+per-question upper bound using the standard CBOR integer-width rules
+(0..23 -> 1 byte, 24..255 -> 2, ..., capped at the 64-bit form, 9 bytes):
+
+- **Single / multi / ranking**: choice indices are bounded by the option count;
+  list answers by the max-selections / max-ranked limit.
+- **Numeric**: the wider of the two range bounds, with negatives sized by the
+  CBOR magnitude `-1 - v`, capped at 64-bit.
+- **Free text (`Custom`)**: counted as the empty string `""`.
+
+**Limitation -- free text.** Because a free-text answer has no length bound, the
+estimate counts it as empty. A survey with a `Custom` question therefore has no
+size-hiding guarantee for that question: a real free-text answer longer than the
+padding produces a longer ciphertext, revealing that the voter wrote something.
+Bounding it would require imposing an explicit maximum answer length. The other
+four question types are fully bounded, so for surveys without free text the
+auto-sized padding makes every ciphertext identical in length.
+
+`tests/SurveyTests.elm` validates this: it builds a maximal ballot, encodes it
+through the real CBOR encoder, and checks the actual width never exceeds
+`maxPlaintextSize` (run with `elm-test`).
+
 ### Elm modules
 
 **Main.elm** -- The entire application in one file. Defines:

@@ -218,7 +218,18 @@ update msg model =
                     ( { model | epoch = Failure Http.NetworkError }, Cmd.none )
 
                 Ok epoch ->
-                    ( { model | epoch = Success epoch, proposals = Loading, onchainSurveys = Loading }
+                    let
+                        form =
+                            model.surveyForm
+
+                        prefilledForm =
+                            if String.isEmpty form.endEpoch then
+                                { form | endEpoch = String.fromInt (epoch + 1) }
+
+                            else
+                                form
+                    in
+                    ( { model | epoch = Success epoch, surveyForm = prefilledForm, proposals = Loading, onchainSurveys = Loading }
                     , Api.loadSurveyTxHashes model.networkId GotSurveyTxHashes
                     )
 

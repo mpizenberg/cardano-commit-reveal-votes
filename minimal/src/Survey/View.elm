@@ -1,4 +1,4 @@
-module Survey exposing
+module Survey.View exposing
     ( viewAnswerItems
     , viewResponseForm
     , viewSurvey

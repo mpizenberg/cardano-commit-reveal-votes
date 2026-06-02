@@ -27,10 +27,10 @@ import Integer
 import Json.Decode as JD exposing (Decoder, Value)
 import Natural as N
 import RemoteData exposing (RemoteData(..), WebData)
-import Survey
 import Survey.Codec as Codec
 import Survey.Form as Form
 import Survey.Types as ST
+import Survey.View as View
 import Task
 import Time
 import Tlock
@@ -903,11 +903,11 @@ viewKioskSurvey model survey =
             viewKioskStats model survey deduped
         , if isCancelled then
             -- No response form when cancelled, so show the definition on its own.
-            Survey.viewSurvey survey.definition
+            View.viewSurvey survey.definition
 
           else if isOpen then
             div []
-                [ Survey.viewResponseForm
+                [ View.viewResponseForm
                     survey.definition
                     model.responseForm
                     model.responseFormError
@@ -918,7 +918,7 @@ viewKioskSurvey model survey =
 
           else
             div []
-                [ Survey.viewSurvey survey.definition
+                [ View.viewSurvey survey.definition
                 , p [ HA.class "meta" ] [ text "This survey is closed; responses are no longer accepted." ]
                 ]
         , if isCancelled then
@@ -1599,7 +1599,7 @@ viewSurveysTab model =
 viewOnchainSurvey : OnchainSurvey -> Html Msg
 viewOnchainSurvey survey =
     div []
-        [ Survey.viewSurvey survey.definition
+        [ View.viewSurvey survey.definition
         , p [ HA.class "meta" ]
             [ text ("Tx: " ++ survey.txHash ++ " [" ++ String.fromInt survey.index ++ "]") ]
         , div [ HA.style "display" "flex", HA.style "gap" "0.5rem" ]
@@ -1638,7 +1638,7 @@ viewCancelledSurvey survey =
 viewCreateSurveyTab : Model -> Html Msg
 viewCreateSurveyTab model =
     div []
-        [ Survey.viewSurveyForm model.currentTime model.surveyForm model.surveyFormError (submitButtonLabel "Connect wallet to submit" "Submit Survey On-Chain" model) SurveyFormMsg
+        [ View.viewSurveyForm model.currentTime model.surveyForm model.surveyFormError (submitButtonLabel "Connect wallet to submit" "Submit Survey On-Chain" model) SurveyFormMsg
         , viewSubmissionStatus model.submissionStatus
         , case Form.formToDefinition model.currentTime model.surveyForm of
             Ok def ->
@@ -1709,7 +1709,7 @@ viewFillSurveyTab model =
                     , onClick (TabClicked SurveysTab)
                     ]
                     [ text "Back to Surveys" ]
-                , Survey.viewResponseForm
+                , View.viewResponseForm
                     target.definition
                     model.responseForm
                     model.responseFormError
@@ -1859,7 +1859,7 @@ viewCancelSurveyTab model =
                     [ text "Back to Surveys" ]
                 , div [ HA.class "survey-card", HA.style "margin-top" "1rem" ]
                     [ h3 [] [ text "Cancel Survey" ]
-                    , Survey.viewSurvey target.definition
+                    , View.viewSurvey target.definition
                     , p [ HA.class "meta" ]
                         [ text ("Tx: " ++ target.txHash ++ " [" ++ String.fromInt target.index ++ "]") ]
                     , if ownerMatches then
@@ -2069,7 +2069,7 @@ viewResponse model maybeDef resp =
         , p [ HA.class "meta" ] [ text ("Role: " ++ ST.roleToString r.role) ]
         , case r.answers of
             ST.PublicAnswers items ->
-                Survey.viewAnswerItems maybeDef items
+                View.viewAnswerItems maybeDef items
 
             ST.TimelockedAnswers blob ->
                 viewTimelockedAnswers model maybeDef resp blob
@@ -2114,7 +2114,7 @@ viewTimelockedAnswers model maybeDef resp blob =
                         p [ HA.class "loading" ] [ text "Decrypting ballot..." ]
 
                     Just (Decrypted items) ->
-                        Survey.viewAnswerItems maybeDef items
+                        View.viewAnswerItems maybeDef items
 
                     Just (DecryptError err) ->
                         div []

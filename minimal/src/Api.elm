@@ -1,4 +1,4 @@
-module Api exposing (ActiveProposal, ProtocolParams, SurveyTxMetadata, SurveyTxSlot, loadProtocolParams, loadSurveyMetadata, loadTxHashesByLabel, queryEpoch)
+module Api exposing (ActiveProposal, ChainTip, ProtocolParams, SurveyTxMetadata, SurveyTxSlot, epochLengthSeconds, loadProtocolParams, loadSurveyMetadata, loadTxHashesByLabel, queryTip)
 
 {-| Minimal API module for fetching Cardano governance data from Koios.
 -}
@@ -69,26 +69,53 @@ loadProtocolParams networkId toMsg =
 
 
 
--- Epoch
+-- Chain tip
 
 
-queryEpoch : NetworkId -> (Result Http.Error Int -> msg) -> Cmd msg
-queryEpoch networkId toMsg =
+{-| Current chain tip: epoch number, slot offset within the epoch, and the
+wall-clock (unix seconds) block time. Together these let us locate "now" within
+the current epoch and project future epoch boundaries.
+-}
+type alias ChainTip =
+    { epoch : Int
+    , epochSlot : Int
+    , blockTime : Int
+    }
+
+
+queryTip : NetworkId -> (Result Http.Error ChainTip -> msg) -> Cmd msg
+queryTip networkId toMsg =
     Http.request
-        { method = "POST"
-        , url = koiosUrl networkId ++ "/ogmios"
-        , headers = [ Http.header "Authorization" <| "Bearer " ++ koiosApiToken ]
-        , body =
-            Http.jsonBody
-                (JE.object
-                    [ ( "jsonrpc", JE.string "2.0" )
-                    , ( "method", JE.string "queryLedgerState/epoch" )
-                    ]
-                )
-        , expect = Http.expectJson toMsg (JD.field "result" JD.int)
+        { method = "GET"
+        , url = koiosUrl networkId ++ "/tip"
+        , headers = [ Http.header "Authorization" ("Bearer " ++ koiosApiToken) ]
+        , body = Http.emptyBody
+        , expect = Http.expectJson toMsg (JD.index 0 chainTipDecoder)
         , timeout = Nothing
         , tracker = Nothing
         }
+
+
+chainTipDecoder : Decoder ChainTip
+chainTipDecoder =
+    JD.map3 ChainTip
+        (JD.field "epoch_no" JD.int)
+        (JD.field "epoch_slot" JD.int)
+        (JD.field "block_time" JD.int)
+
+
+{-| Epoch length in seconds (Shelley slot length is 1s, so this equals the slot
+count per epoch). Hardcoded per network; sufficient for projecting epoch
+boundaries unless a future hard fork changes the epoch length.
+-}
+epochLengthSeconds : NetworkId -> Int
+epochLengthSeconds networkId =
+    case networkId of
+        Mainnet ->
+            432000
+
+        Testnet ->
+            86400
 
 
 

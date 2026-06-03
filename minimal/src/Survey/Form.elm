@@ -175,8 +175,8 @@ emptyForm =
             allRoles
     , endEpoch = ""
     , ownerKeyHash = ""
-    , timelocked = False
-    , revealMinutes = "5"
+    , timelocked = True
+    , revealMinutes = ""
     , paddingSize = ""
     }
 
@@ -392,8 +392,8 @@ formMaxPlaintextSize form =
         |> Result.toMaybe
 
 
-formToDefinition : Int -> SurveyForm -> Result String SurveyDefinition
-formToDefinition nowUnix form =
+formToDefinition : Int -> Maybe Int -> SurveyForm -> Result String SurveyDefinition
+formToDefinition nowUnix defaultRevealDeadline form =
     let
         validateTitle =
             if String.isEmpty (String.trim form.title) then
@@ -462,20 +462,25 @@ formToDefinition nowUnix form =
 
                         else
                             validatePositiveInt "Padding size must be a positive number of bytes" form.paddingSize
+
+                    validateRevealDeadline =
+                        if String.isEmpty (String.trim form.revealMinutes) then
+                            defaultRevealDeadline
+                                |> Result.fromMaybe "Enter a reveal delay in minutes (couldn't derive it from the survey end yet)"
+
+                        else
+                            validatePositiveInt "Reveal delay must be a positive number of minutes" form.revealMinutes
+                                |> Result.map (\minutes -> nowUnix + (minutes * 60))
                 in
                 Result.map2
-                    (\minutes padding ->
-                        let
-                            deadline =
-                                nowUnix + (minutes * 60)
-                        in
+                    (\deadline padding ->
                         Timelocked
                             { chainHash = Bytes.fromHexUnchecked quicknetChainHashHex
                             , round = Tlock.roundForDeadline deadline
                             , paddingSize = padding
                             }
                     )
-                    (validatePositiveInt "Reveal delay must be a positive number of minutes" form.revealMinutes)
+                    validateRevealDeadline
                     validatePadding
 
             else

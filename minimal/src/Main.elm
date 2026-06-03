@@ -92,7 +92,7 @@ type alias Model =
     , copiedKioskLink : Maybe String
     , db : Value
     , protocolParams : Maybe Api.ProtocolParams
-    , epoch : WebData Int
+    , chainTip : WebData Api.ChainTip
     , proposals : WebData (Dict String ActiveProposal)
     , walletsDiscovered : List WalletDescriptor
     , wallet : Maybe Cip30.Wallet
@@ -135,7 +135,7 @@ init flags =
             , copiedKioskLink = Nothing
             , db = flags.db
             , protocolParams = Nothing
-            , epoch = NotAsked
+            , chainTip = NotAsked
             , proposals = NotAsked
             , walletsDiscovered = []
             , wallet = Nothing
@@ -160,10 +160,10 @@ init flags =
             , roundBeacons = Dict.empty
             }
     in
-    ( { model | epoch = Loading }
+    ( { model | chainTip = Loading }
     , Cmd.batch
         [ Api.loadProtocolParams networkId GotProtocolParams
-        , Api.queryEpoch networkId GotEpoch
+        , Api.queryTip networkId GotTip
         , toWallet (Cip30.encodeRequest Cip30.discoverWallets)
         , Task.perform Tick Time.now
         ]
@@ -289,7 +289,7 @@ revealableBallots model responses =
 type Msg
     = WalletMsg Value
     | GotProtocolParams (Result Http.Error Api.ProtocolParams)
-    | GotEpoch (Result Http.Error Int)
+    | GotTip (Result Http.Error Api.ChainTip)
     | ConnectWalletClicked { id : String, supportedExtensions : List Int }
     | DisconnectWalletClicked
     | OnTaskProgress ( ConcurrentTask.Pool Msg, Cmd Msg )
@@ -329,24 +329,24 @@ update msg model =
                 Err _ ->
                     ( { model | errors = "Failed to load protocol params" :: model.errors }, Cmd.none )
 
-        GotEpoch result ->
+        GotTip result ->
             case result of
                 Err _ ->
-                    ( { model | epoch = Failure Http.NetworkError }, Cmd.none )
+                    ( { model | chainTip = Failure Http.NetworkError }, Cmd.none )
 
-                Ok epoch ->
+                Ok tip ->
                     let
                         form =
                             model.surveyForm
 
                         prefilledForm =
                             if String.isEmpty form.endEpoch then
-                                { form | endEpoch = String.fromInt (epoch + 1) }
+                                { form | endEpoch = String.fromInt (tip.epoch + 1) }
 
                             else
                                 form
                     in
-                    ( { model | epoch = Success epoch, surveyForm = prefilledForm, proposals = Loading, onchainSurveys = Loading }
+                    ( { model | chainTip = Success tip, surveyForm = prefilledForm, proposals = Loading, onchainSurveys = Loading }
                     , Api.loadTxHashesByLabel model.networkId Labels.definitionsLabel GotDirectoryTxHashes
                     )
 
@@ -712,9 +712,43 @@ update msg model =
                     ( { model | responsesBySurvey = Dict.insert (surveyRefKey ref) (Success responses) model.responsesBySurvey }, Cmd.none )
 
 
+{-| Current epoch number, derived from the chain tip. -}
+currentEpoch : Model -> WebData Int
+currentEpoch model =
+    RemoteData.map .epoch model.chainTip
+
+
+{-| Default reveal deadline (unix seconds) for the current form's end epoch,
+used when the reveal-delay field is left blank: a couple of minutes after the
+survey closes (the start of the epoch following `endEpoch`). `Nothing` until the
+chain tip is loaded and the end epoch is a valid number.
+-}
+defaultRevealDeadline : Model -> Maybe Int
+defaultRevealDeadline model =
+    case ( RemoteData.toMaybe model.chainTip, String.toInt model.surveyForm.endEpoch ) of
+        ( Just tip, Just endEpoch ) ->
+            let
+                epochLength =
+                    Api.epochLengthSeconds model.networkId
+
+                currentEpochStart =
+                    tip.blockTime - tip.epochSlot
+
+                surveyEnd =
+                    currentEpochStart + (endEpoch + 1 - tip.epoch) * epochLength
+
+                marginSeconds =
+                    120
+            in
+            Just (surveyEnd + marginSeconds)
+
+        _ ->
+            Nothing
+
+
 submitSurvey : Model -> ( Model, Cmd Msg )
 submitSurvey model =
-    case Form.formToDefinition model.currentTime model.surveyForm of
+    case Form.formToDefinition model.currentTime (defaultRevealDeadline model) model.surveyForm of
         Err err ->
             ( { model | surveyFormError = Just err }, Cmd.none )
 
@@ -1031,9 +1065,9 @@ viewKioskSurvey model survey =
                 -- Open while current epoch is at or before endEpoch (inclusive cutoff).
                 -- If the epoch hasn't loaded, don't block responding; on-chain rules apply.
                 isOpen =
-                    case RemoteData.toMaybe model.epoch of
-                        Just currentEpoch ->
-                            currentEpoch <= survey.definition.endEpoch
+                    case RemoteData.toMaybe (currentEpoch model) of
+                        Just epoch ->
+                            epoch <= survey.definition.endEpoch
 
                         Nothing ->
                             True
@@ -1273,22 +1307,22 @@ viewNoAggregation prompt label =
 
 viewStatusLine : Model -> OnchainSurvey -> Html Msg
 viewStatusLine model survey =
-    case RemoteData.toMaybe model.epoch of
+    case RemoteData.toMaybe (currentEpoch model) of
         Nothing ->
             p [ HA.class "meta" ] [ text "Status: unknown (epoch not loaded)" ]
 
-        Just currentEpoch ->
+        Just epoch ->
             let
                 endEpoch =
                     survey.definition.endEpoch
             in
-            if currentEpoch <= endEpoch then
+            if epoch <= endEpoch then
                 p [ HA.class "meta" ]
                     [ text
                         ("Status: Open — ends at epoch "
                             ++ String.fromInt endEpoch
                             ++ " ("
-                            ++ String.fromInt (endEpoch - currentEpoch)
+                            ++ String.fromInt (endEpoch - epoch)
                             ++ " epoch(s) remaining)"
                         )
                     ]
@@ -1414,7 +1448,7 @@ viewStatus model =
 
             Just _ ->
                 text ""
-        , case model.epoch of
+        , case currentEpoch model of
             Loading ->
                 p [ HA.class "loading" ] [ text "Loading epoch..." ]
 
@@ -1454,11 +1488,11 @@ viewSurveysTab model =
 
             Success allSurveys ->
                 let
-                    currentEpoch =
-                        RemoteData.withDefault 0 model.epoch
+                    epoch =
+                        RemoteData.withDefault 0 (currentEpoch model)
 
                     surveys =
-                        List.filter (\s -> s.definition.endEpoch >= currentEpoch) allSurveys
+                        List.filter (\s -> s.definition.endEpoch >= epoch) allSurveys
 
                     ( cancelledSurveys, activeSurveys ) =
                         List.partition isCancelled surveys
@@ -1558,9 +1592,9 @@ viewCancelledSurvey survey =
 viewCreateSurveyTab : Model -> Html Msg
 viewCreateSurveyTab model =
     div []
-        [ View.viewSurveyForm model.currentTime model.surveyForm model.surveyFormError (submitButtonLabel "Connect wallet to submit" "Submit Survey On-Chain" model) SurveyFormMsg
+        [ View.viewSurveyForm model.currentTime (defaultRevealDeadline model) model.surveyForm model.surveyFormError (submitButtonLabel "Connect wallet to submit" "Submit Survey On-Chain" model) SurveyFormMsg
         , viewSubmissionStatus model.submissionStatus
-        , case Form.formToDefinition model.currentTime model.surveyForm of
+        , case Form.formToDefinition model.currentTime (defaultRevealDeadline model) model.surveyForm of
             Ok def ->
                 div [ HA.class "metadatum-preview" ]
                     [ h3 [] [ text ("Preview: Metadatum (label " ++ String.fromInt Labels.metadataLabel ++ ")") ]

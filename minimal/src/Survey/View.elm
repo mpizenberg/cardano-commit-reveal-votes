@@ -132,8 +132,8 @@ viewOptionsDisplay options =
 -- ============================================================
 
 
-viewSurveyForm : Int -> SurveyForm -> Maybe String -> String -> (FormMsg -> msg) -> Html msg
-viewSurveyForm nowUnix form validationError submitLabel toMsg =
+viewSurveyForm : Int -> Maybe Int -> SurveyForm -> Maybe String -> String -> (FormMsg -> msg) -> Html msg
+viewSurveyForm nowUnix defaultRevealDeadline form validationError submitLabel toMsg =
     div [ HA.class "survey-form" ]
         [ h3 [] [ text "Create Survey" ]
         , div [ HA.class "form-group" ]
@@ -196,7 +196,7 @@ viewSurveyForm nowUnix form validationError submitLabel toMsg =
                     []
                 ]
             ]
-        , viewBallotModeForm nowUnix form toMsg
+        , viewBallotModeForm nowUnix defaultRevealDeadline form toMsg
         , case validationError of
             Just err ->
                 p [ HA.class "error" ] [ text err ]
@@ -211,8 +211,8 @@ viewSurveyForm nowUnix form validationError submitLabel toMsg =
         ]
 
 
-viewBallotModeForm : Int -> SurveyForm -> (FormMsg -> msg) -> Html msg
-viewBallotModeForm nowUnix form toMsg =
+viewBallotModeForm : Int -> Maybe Int -> SurveyForm -> (FormMsg -> msg) -> Html msg
+viewBallotModeForm nowUnix defaultRevealDeadline form toMsg =
     div [ HA.class "form-group" ]
         [ label [ HA.class "role-toggle" ]
             [ input
@@ -233,10 +233,12 @@ viewBallotModeForm nowUnix form toMsg =
                         , input
                             [ HA.type_ "number"
                             , HA.value form.revealMinutes
-                            , HA.placeholder "e.g. 5"
+                            , HA.placeholder "blank = at survey end"
                             , HE.onInput (toMsg << SetRevealMinutes)
                             ]
                             []
+                        , p [ HA.class "meta" ]
+                            [ text "Leave blank to reveal a couple of minutes after the survey's end epoch." ]
                         ]
                     , div [ HA.class "form-group" ]
                         [ label [] [ text "Padding size (bytes)" ]
@@ -258,14 +260,28 @@ viewBallotModeForm nowUnix form toMsg =
                             [ text "Leave blank to auto-size to the largest possible ballot, so every ciphertext is the same length." ]
                         ]
                     ]
-                , case String.toInt form.revealMinutes of
-                    Just minutes ->
-                        let
-                            round =
-                                Tlock.roundForDeadline (nowUnix + (minutes * 60))
-                        in
+                , let
+                    maybeDeadline =
+                        case String.toInt form.revealMinutes of
+                            Just minutes ->
+                                Just ( nowUnix + (minutes * 60), False )
+
+                            Nothing ->
+                                Maybe.map (\d -> ( d, True )) defaultRevealDeadline
+                  in
+                  case maybeDeadline of
+                    Just ( deadline, isDefault ) ->
                         p [ HA.class "meta" ]
-                            [ text ("Drand quicknet round: " ++ String.fromInt round) ]
+                            [ text
+                                ((if isDefault then
+                                    "Default reveal at survey end — Drand quicknet round: "
+
+                                  else
+                                    "Drand quicknet round: "
+                                 )
+                                    ++ String.fromInt (Tlock.roundForDeadline deadline)
+                                )
+                            ]
 
                     Nothing ->
                         text ""

@@ -124,7 +124,7 @@ loadTxHashesByLabel : NetworkId -> Int -> (Result Http.Error (List SurveyTxSlot)
 loadTxHashesByLabel networkId label toMsg =
     Http.request
         { method = "GET"
-        , url = koiosUrl networkId ++ "/tx_by_metalabel?_label=" ++ String.fromInt label ++ "&order=absolute_slot.desc&limit=100"
+        , url = koiosUrl networkId ++ "/tx_by_metalabel?_label=" ++ String.fromInt label ++ "&select=tx_hash,absolute_slot&order=absolute_slot.desc&limit=100"
         , headers = [ Http.header "Authorization" ("Bearer " ++ koiosApiToken) ]
         , body = Http.emptyBody
         , expect =
@@ -152,7 +152,7 @@ loadSurveyMetadata : NetworkId -> List String -> (Result Http.Error (List Survey
 loadSurveyMetadata networkId txHashes toMsg =
     Http.request
         { method = "POST"
-        , url = koiosUrl networkId ++ "/tx_metadata"
+        , url = koiosUrl networkId ++ "/tx_metadata?select=tx_hash,metadata"
         , headers = [ Http.header "Authorization" ("Bearer " ++ koiosApiToken) ]
         , body = Http.jsonBody (JE.object [ ( "_tx_hashes", JE.list JE.string txHashes ) ])
         , expect =

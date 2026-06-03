@@ -2,6 +2,7 @@ module Tlock exposing
     ( decrypt
     , encrypt
     , fetchRound
+    , formatDuration
     , revealTimeOf
     , roundForDeadline
     )
@@ -50,6 +51,40 @@ roundForDeadline deadlineUnix =
 revealTimeOf : Int -> Int
 revealTimeOf round =
     genesisTime + (round - 1) * period
+
+
+{-| Human-readable duration from a count of seconds, e.g. `3d 4h 5m 6s`.
+Only the largest non-zero units are shown; `0s` for non-positive input.
+-}
+formatDuration : Int -> String
+formatDuration totalSeconds =
+    if totalSeconds <= 0 then
+        "0s"
+
+    else
+        let
+            days =
+                totalSeconds // 86400
+
+            hours =
+                modBy 86400 totalSeconds // 3600
+
+            minutes =
+                modBy 3600 totalSeconds // 60
+
+            seconds =
+                modBy 60 totalSeconds
+
+            parts =
+                [ ( days, "d" )
+                , ( hours, "h" )
+                , ( minutes, "m" )
+                , ( seconds, "s" )
+                ]
+                    |> List.filter (\( value, _ ) -> value > 0)
+                    |> List.map (\( value, unit ) -> String.fromInt value ++ unit)
+        in
+        String.join " " parts
 
 
 

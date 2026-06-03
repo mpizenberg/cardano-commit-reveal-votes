@@ -1129,7 +1129,7 @@ viewRevealProgress model survey deduped =
 
                   else
                     p [ HA.class "meta" ]
-                        [ text ("Locked — reveal in ~" ++ String.fromInt (Basics.max 0 (revealTime - model.currentTime)) ++ "s.") ]
+                        [ text ("Locked — reveal in ~" ++ Tlock.formatDuration (revealTime - model.currentTime) ++ ".") ]
                 , p [ HA.class "meta" ]
                     [ text ("  Revealed: " ++ String.fromInt revealedCount ++ " / " ++ String.fromInt total) ]
                 , p [ HA.class "meta" ]
@@ -1987,8 +1987,8 @@ viewTimelockedAnswers model maybeDef resp blob =
                         ("Locked timelocked ballot — revealable after Drand round "
                             ++ String.fromInt cfg.round
                             ++ " (~"
-                            ++ String.fromInt (Basics.max 0 (revealTime - model.currentTime))
-                            ++ "s remaining)"
+                            ++ Tlock.formatDuration (revealTime - model.currentTime)
+                            ++ " remaining)"
                         )
                     ]
 

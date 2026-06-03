@@ -13,7 +13,7 @@ import Survey.Types as ST
 
 {-| One row per (deduplicated) response: responder, role, then one cell per
 question. Choice answers use option labels; ranking uses "a > b > c"; numeric the
-value; custom a compact text/hex. Not-yet-revealed timelocked ballots export
+value; custom a compact text/hex. Not-yet-revealed timelocked responses export
 "encrypted" for every question cell.
 -}
 buildCsv : (ST.OnchainResponse -> Maybe (List ST.AnswerItem)) -> ST.OnchainSurvey -> List ST.OnchainResponse -> String

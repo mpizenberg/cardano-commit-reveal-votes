@@ -196,7 +196,7 @@ viewSurveyForm nowUnix defaultRevealDeadline form validationError submitLabel to
                     []
                 ]
             ]
-        , viewBallotModeForm nowUnix defaultRevealDeadline form toMsg
+        , viewSubmissionModeForm nowUnix defaultRevealDeadline form toMsg
         , case validationError of
             Just err ->
                 p [ HA.class "error" ] [ text err ]
@@ -211,8 +211,8 @@ viewSurveyForm nowUnix defaultRevealDeadline form validationError submitLabel to
         ]
 
 
-viewBallotModeForm : Int -> Maybe Int -> SurveyForm -> (FormMsg -> msg) -> Html msg
-viewBallotModeForm nowUnix defaultRevealDeadline form toMsg =
+viewSubmissionModeForm : Int -> Maybe Int -> SurveyForm -> (FormMsg -> msg) -> Html msg
+viewSubmissionModeForm nowUnix defaultRevealDeadline form toMsg =
     div [ HA.class "form-group" ]
         [ label [ HA.class "role-toggle" ]
             [ input
@@ -221,7 +221,7 @@ viewBallotModeForm nowUnix defaultRevealDeadline form toMsg =
                 , HE.onCheck (toMsg << SetTimelocked)
                 ]
                 []
-            , text " Timelocked ballots (delayed reveal via Drand)"
+            , text " Timelocked responses (delayed reveal via Drand)"
             ]
         , if form.timelocked then
             div []
@@ -257,7 +257,7 @@ viewBallotModeForm nowUnix defaultRevealDeadline form toMsg =
                             ]
                             []
                         , p [ HA.class "meta" ]
-                            [ text "Leave blank to auto-size to the largest possible ballot, so every ciphertext is the same length." ]
+                            [ text "Leave blank to auto-size to the largest possible response, so every ciphertext is the same length." ]
                         ]
                     ]
                 , let
@@ -702,7 +702,7 @@ viewNumericInput toMsg qIdx value constraints =
 
 
 {-| Render a list of decoded answer items (public answers, or a timelocked
-ballot after it has been revealed and decrypted).
+response after it has been revealed and decrypted).
 -}
 viewAnswerItems : Maybe SurveyDefinition -> List AnswerItem -> Html msg
 viewAnswerItems maybeDef items =

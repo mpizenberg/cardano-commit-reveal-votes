@@ -1,7 +1,7 @@
 module SurveyTests exposing (suite)
 
 {-| Checks that `Survey.Codec.maxPlaintextSize` is a correct upper bound on the
-actual CBOR size of a ballot.
+actual CBOR size of a response.
 
 The actual size comes from the real CBOR encoder (`Cbor.Encode` +
 `Metadatum.toCbor`), exactly as `Survey.Codec.plaintextHexForAnswers` produces
@@ -30,7 +30,7 @@ suite =
                     questions =
                         []
                 in
-                actualWidth (maximalBallot questions)
+                actualWidth (maximalResponse questions)
                     |> Expect.equal (maxPlaintextSize questions)
         , test "tight for a typical small survey (one of each bounded type)" <|
             \_ ->
@@ -43,7 +43,7 @@ suite =
                         , custom
                         ]
                 in
-                actualWidth (maximalBallot questions)
+                actualWidth (maximalResponse questions)
                     |> Expect.equal (maxPlaintextSize questions)
         , test "negative and wide numerics are counted at full width" <|
             \_ ->
@@ -54,7 +54,7 @@ suite =
                         , numeric -23 23
                         ]
                 in
-                actualWidth (maximalBallot questions)
+                actualWidth (maximalResponse questions)
                     |> Expect.equal (maxPlaintextSize questions)
         , test "large option counts: the estimate is a safe upper bound" <|
             \_ ->
@@ -64,7 +64,7 @@ suite =
                     questions =
                         [ multiSelect 300 10, ranking 300 10 ]
                 in
-                actualWidth (maximalBallot questions)
+                actualWidth (maximalResponse questions)
                     |> Expect.atMost (maxPlaintextSize questions)
         , test "a non-empty free-text answer can exceed the estimate (documented limitation)" <|
             \_ ->
@@ -75,14 +75,14 @@ suite =
                     longText =
                         String.repeat 100 "x"
 
-                    ballot =
+                    response =
                         [ List [ metaInt 4, metaInt 0, String longText ] ]
                 in
-                actualWidth ballot
+                actualWidth response
                     |> Expect.greaterThan (maxPlaintextSize questions)
-        , fuzz (Fuzz.list questionFuzzer) "a maximal ballot never exceeds the estimate" <|
+        , fuzz (Fuzz.list questionFuzzer) "a maximal response never exceeds the estimate" <|
             \questions ->
-                actualWidth (maximalBallot questions)
+                actualWidth (maximalResponse questions)
                     |> Expect.atMost (maxPlaintextSize questions)
         ]
 
@@ -104,11 +104,11 @@ metaWidth m =
 
 
 
--- MAXIMAL BALLOT: the largest-encoding answer for each question
+-- MAXIMAL RESPONSE: the largest-encoding answer for each question
 
 
-maximalBallot : List SurveyQuestion -> List Metadatum
-maximalBallot questions =
+maximalResponse : List SurveyQuestion -> List Metadatum
+maximalResponse questions =
     List.indexedMap maximalAnswer questions
 
 
@@ -125,7 +125,7 @@ maximalAnswer qIdx question =
             List [ metaInt 2, metaInt qIdx, List (largestIndices (List.length options) maxRanked) ]
 
         NumericRange { constraints } ->
-            -- Pick whichever bound the real encoder makes wider, so the ballot
+            -- Pick whichever bound the real encoder makes wider, so the response
             -- is genuinely maximal.
             let
                 v =

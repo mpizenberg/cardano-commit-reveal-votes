@@ -1,13 +1,13 @@
 module Survey.Types exposing
     ( AnswerItem(..)
-    , BallotMode(..)
-    , BallotState(..)
     , NumericConstraints
     , OnchainResponse
     , OnchainSurvey
     , ParsedPayload(..)
     , ResponseAnswers(..)
+    , ResponseState(..)
     , Role(..)
+    , SubmissionMode(..)
     , SurveyDefinition
     , SurveyQuestion(..)
     , SurveyRef
@@ -94,27 +94,27 @@ type alias SurveyDefinition =
     , description : String
     , roleWeighting : List ( Role, WeightingMode )
     , endEpoch : Int
-    , ballotMode : BallotMode
+    , submissionMode : SubmissionMode
     , questions : List SurveyQuestion
     }
 
 
-{-| How ballots (responses) are submitted for a survey.
+{-| How responses are submitted for a survey.
 
   - `Public`: plaintext answers, as in plain CIP-179.
   - `Timelocked`: answers are Drand `tlock` ciphertext, decryptable by anyone
     once the pinned round publishes. Delayed reveal, not permanent secrecy.
 
 -}
-type BallotMode
+type SubmissionMode
     = Public
     | Timelocked TimelockConfig
 
 
 {-| Decryption parameters pinned once in the survey definition so individual
 responses don't repeat them. `round` is the Drand quicknet round whose signature
-reveals the ballots; `paddingSize` is the minimum plaintext size (bytes) each
-ballot is padded to before encryption, to hide answer-content size.
+reveals the responses; `paddingSize` is the minimum plaintext size (bytes) each
+response is padded to before encryption, to hide answer-content size.
 -}
 type alias TimelockConfig =
     { chainHash : Bytes Any
@@ -170,14 +170,14 @@ type alias OnchainSurvey =
 
 type alias OnchainResponse =
     { txHash : String
-    , ballotIndex : Int
+    , responseIndex : Int
     , response : SurveyResponse
     }
 
 
-{-| Per-ballot decryption state for timelocked responses, keyed by ballot key.
+{-| Per-response decryption state for timelocked responses, keyed by response key.
 -}
-type BallotState
+type ResponseState
     = Decrypting
     | Decrypted (List AnswerItem)
     | DecryptError String

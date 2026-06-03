@@ -31,7 +31,7 @@ import Survey.Csv as Csv
 import Survey.Form as Form
 import Survey.Labels as Labels
 import Survey.Results as Results
-import Survey.Types as ST exposing (BallotState(..), OnchainResponse, OnchainSurvey)
+import Survey.Types as ST exposing (OnchainResponse, OnchainSurvey, ResponseState(..))
 import Survey.View as View
 import Task
 import Time
@@ -71,7 +71,7 @@ type Tab
 
 type SubmissionStatus
     = NotSubmitting
-    | EncryptingBallot
+    | EncryptingResponse
     | WaitingForSignature { tx : Transaction, createdSurvey : Maybe ST.SurveyDefinition }
     | WaitingForSubmission { tx : Transaction, createdSurvey : Maybe ST.SurveyDefinition }
     | Submitted { txId : String, createdSurvey : Maybe ST.SurveyDefinition }
@@ -113,7 +113,7 @@ type alias Model =
     , responseFormError : Maybe String
     , cancelTarget : Maybe OnchainSurvey
     , currentTime : Int
-    , decryptedBallots : Dict String BallotState
+    , decryptedResponses : Dict String ResponseState
     , roundBeacons : Dict Int (RemoteData String String)
     }
 
@@ -156,7 +156,7 @@ init flags =
             , responseFormError = Nothing
             , cancelTarget = Nothing
             , currentTime = 0
-            , decryptedBallots = Dict.empty
+            , decryptedResponses = Dict.empty
             , roundBeacons = Dict.empty
             }
     in
@@ -215,11 +215,11 @@ cachedResponses model ref =
         |> Maybe.withDefault []
 
 
-{-| Start an independent decrypt task per ballot, all sharing one already-fetched
-beacon (no network I/O). Each ballot updates its own `decryptedBallots` entry.
+{-| Start an independent decrypt task per response, all sharing one already-fetched
+beacon (no network I/O). Each response updates its own `decryptedResponses` entry.
 -}
 startDecrypts : String -> List ( String, String ) -> Model -> ( Model, Cmd Msg )
-startDecrypts beaconJson ballots model =
+startDecrypts beaconJson responses model =
     List.foldl
         (\( key, ciphertextHex ) ( m, cmds ) ->
             let
@@ -227,46 +227,46 @@ startDecrypts beaconJson ballots model =
                     ConcurrentTask.attempt
                         { pool = m.taskPool
                         , send = sendTask
-                        , onComplete = BallotDecrypted key
+                        , onComplete = ResponseDecrypted key
                         }
                         (Tlock.decrypt { ciphertextHex = ciphertextHex, beaconJson = beaconJson })
             in
-            ( { m | taskPool = newPool, decryptedBallots = Dict.insert key Decrypting m.decryptedBallots }
+            ( { m | taskPool = newPool, decryptedResponses = Dict.insert key Decrypting m.decryptedResponses }
             , cmd :: cmds
             )
         )
         ( model, [] )
-        ballots
+        responses
         |> Tuple.mapSecond Cmd.batch
 
 
-{-| Mark every ballot of a failed round fetch with the error.
+{-| Mark every response of a failed round fetch with the error.
 -}
 failRound : Int -> List ( String, String ) -> String -> Model -> Model
-failRound round ballots err model =
+failRound round responses err model =
     { model
         | roundBeacons = Dict.insert round (Failure err) model.roundBeacons
-        , decryptedBallots =
+        , decryptedResponses =
             List.foldl (\( k, _ ) -> Dict.insert k (DecryptError ("Round fetch failed: " ++ err)))
-                model.decryptedBallots
-                ballots
+                model.decryptedResponses
+                responses
     }
 
 
-{-| Timelocked ballots of a survey that are not yet revealed, as
-`(ballotKey, ciphertextHex)` pairs ready for `RevealAll`.
+{-| Timelocked responses of a survey that are not yet revealed, as
+`(responseKey, ciphertextHex)` pairs ready for `RevealAll`.
 -}
-revealableBallots : Model -> List OnchainResponse -> List ( String, String )
-revealableBallots model responses =
+revealableResponses : Model -> List OnchainResponse -> List ( String, String )
+revealableResponses model responses =
     List.filterMap
         (\resp ->
             case resp.response.answers of
                 ST.TimelockedAnswers blob ->
                     let
                         key =
-                            Results.ballotKey resp
+                            Results.responseKey resp
                     in
-                    case Dict.get key model.decryptedBallots of
+                    case Dict.get key model.decryptedResponses of
                         Just (Decrypted _) ->
                             Nothing
 
@@ -306,10 +306,10 @@ type Msg
     | GotResponseMetadata ST.SurveyRef (Result Http.Error (List Api.SurveyTxMetadata))
     | Tick Time.Posix
     | TimelockEncrypted (ConcurrentTask.Response String { ciphertextHex : String })
-    | RevealBallot Int String String
+    | RevealResponse Int String String
     | RevealAll Int (List ( String, String ))
     | GotRoundBeacon Int (List ( String, String )) (ConcurrentTask.Response String { beaconJson : String })
-    | BallotDecrypted String (ConcurrentTask.Response String { plaintextHex : String })
+    | ResponseDecrypted String (ConcurrentTask.Response String { plaintextHex : String })
     | ExportCsv OnchainSurvey
     | CopyKioskLink String
 
@@ -409,28 +409,28 @@ update msg model =
 
                 ConcurrentTask.Error err ->
                     ( { model
-                        | submissionStatus = SubmissionError ("Ballot encryption failed: " ++ err)
-                        , responseFormError = Just ("Ballot encryption failed: " ++ err)
+                        | submissionStatus = SubmissionError ("Response encryption failed: " ++ err)
+                        , responseFormError = Just ("Response encryption failed: " ++ err)
                       }
                     , Cmd.none
                     )
 
                 ConcurrentTask.UnexpectedError _ ->
                     ( { model
-                        | submissionStatus = SubmissionError "Unexpected error during ballot encryption"
-                        , responseFormError = Just "Unexpected error during ballot encryption"
+                        | submissionStatus = SubmissionError "Unexpected error during response encryption"
+                        , responseFormError = Just "Unexpected error during response encryption"
                       }
                     , Cmd.none
                     )
 
-        RevealBallot round key ciphertextHex ->
+        RevealResponse round key ciphertextHex ->
             update (RevealAll round [ ( key, ciphertextHex ) ]) model
 
-        RevealAll round ballots ->
+        RevealAll round responses ->
             case Dict.get round model.roundBeacons of
                 Just (Success beaconJson) ->
                     -- Beacon already fetched for this round: decrypt locally, no network.
-                    startDecrypts beaconJson ballots model
+                    startDecrypts beaconJson responses model
 
                 _ ->
                     let
@@ -438,35 +438,35 @@ update msg model =
                             ConcurrentTask.attempt
                                 { pool = model.taskPool
                                 , send = sendTask
-                                , onComplete = GotRoundBeacon round ballots
+                                , onComplete = GotRoundBeacon round responses
                                 }
                                 (Tlock.fetchRound { round = round })
 
                         decrypting =
-                            List.foldl (\( k, _ ) -> Dict.insert k Decrypting) model.decryptedBallots ballots
+                            List.foldl (\( k, _ ) -> Dict.insert k Decrypting) model.decryptedResponses responses
                     in
                     ( { model
                         | taskPool = newPool
                         , roundBeacons = Dict.insert round Loading model.roundBeacons
-                        , decryptedBallots = decrypting
+                        , decryptedResponses = decrypting
                       }
                     , cmd
                     )
 
-        GotRoundBeacon round ballots response ->
+        GotRoundBeacon round responses response ->
             case response of
                 ConcurrentTask.Success { beaconJson } ->
                     startDecrypts beaconJson
-                        ballots
+                        responses
                         { model | roundBeacons = Dict.insert round (Success beaconJson) model.roundBeacons }
 
                 ConcurrentTask.Error err ->
-                    ( failRound round ballots err model, Cmd.none )
+                    ( failRound round responses err model, Cmd.none )
 
                 ConcurrentTask.UnexpectedError _ ->
-                    ( failRound round ballots "unexpected error" model, Cmd.none )
+                    ( failRound round responses "unexpected error" model, Cmd.none )
 
-        BallotDecrypted key response ->
+        ResponseDecrypted key response ->
             let
                 state =
                     case response of
@@ -484,7 +484,7 @@ update msg model =
                         ConcurrentTask.UnexpectedError _ ->
                             DecryptError "Unexpected error during decryption"
             in
-            ( { model | decryptedBallots = Dict.insert key state model.decryptedBallots }, Cmd.none )
+            ( { model | decryptedResponses = Dict.insert key state model.decryptedResponses }, Cmd.none )
 
         ExportCsv survey ->
             let
@@ -707,7 +707,7 @@ update msg model =
                                 (\txMeta ->
                                     case Codec.fromMetadatum txMeta.metadatum of
                                         Ok (ST.ParsedResponses resps) ->
-                                            List.indexedMap (\i r -> { txHash = txMeta.txHash, ballotIndex = i, response = r }) resps
+                                            List.indexedMap (\i r -> { txHash = txMeta.txHash, responseIndex = i, response = r }) resps
 
                                         _ ->
                                             []
@@ -1126,12 +1126,12 @@ viewKioskStats model survey deduped =
 
 
 {-| Timelocked-only reveal stats: the Drand round, whether it has unlocked, and
-how many of the (deduplicated) ballots are revealed vs awaiting reveal. Renders
+how many of the (deduplicated) responses are revealed vs awaiting reveal. Renders
 nothing for public surveys.
 -}
 viewRevealProgress : Model -> OnchainSurvey -> List OnchainResponse -> Html Msg
 viewRevealProgress model survey deduped =
-    case survey.definition.ballotMode of
+    case survey.definition.submissionMode of
         ST.Public ->
             text ""
 
@@ -1150,7 +1150,7 @@ viewRevealProgress model survey deduped =
                     List.length
                         (List.filter
                             (\r ->
-                                case Dict.get (Results.ballotKey r) model.decryptedBallots of
+                                case Dict.get (Results.responseKey r) model.decryptedResponses of
                                     Just (Decrypted _) ->
                                         True
 
@@ -1165,9 +1165,9 @@ viewRevealProgress model survey deduped =
             in
             div [ HA.style "margin-top" "0.5rem" ]
                 [ p [ HA.class "meta" ]
-                    [ text ("Ballot mode: timelocked (Drand round " ++ String.fromInt cfg.round ++ ")") ]
+                    [ text ("Submission mode: timelocked (Drand round " ++ String.fromInt cfg.round ++ ")") ]
                 , if isUnlocked then
-                    p [ HA.class "meta" ] [ text "Reveal round reached — ballots can be decrypted now." ]
+                    p [ HA.class "meta" ] [ text "Reveal round reached — responses can be decrypted now." ]
 
                   else
                     p [ HA.class "meta" ]
@@ -1186,16 +1186,16 @@ viewRevealProgress model survey deduped =
                         )
                     ]
                 , let
-                    pendingBallots =
-                        revealableBallots model deduped
+                    pendingResponses =
+                        revealableResponses model deduped
                   in
-                  if isUnlocked && not (List.isEmpty pendingBallots) then
+                  if isUnlocked && not (List.isEmpty pendingResponses) then
                     button
                         [ HA.class "btn btn-primary btn-sm"
                         , HA.style "margin-top" "0.5rem"
-                        , onClick (RevealAll cfg.round pendingBallots)
+                        , onClick (RevealAll cfg.round pendingResponses)
                         ]
-                        [ text ("Reveal all " ++ String.fromInt (List.length pendingBallots) ++ " ballot(s)") ]
+                        [ text ("Reveal all " ++ String.fromInt (List.length pendingResponses) ++ " response(s)") ]
 
                   else
                     text ""
@@ -1230,7 +1230,7 @@ viewKioskResults model survey deduped =
 
 
 {-| The flat answer items for one response: public answers directly, or a
-revealed (decrypted) timelocked ballot. `Nothing` means a timelocked ballot that
+revealed (decrypted) timelocked response. `Nothing` means a timelocked response that
 is not yet revealed (distinct from "answered nothing").
 -}
 revealedItems : Model -> OnchainResponse -> Maybe (List ST.AnswerItem)
@@ -1240,7 +1240,7 @@ revealedItems model resp =
             Just answerItems
 
         ST.TimelockedAnswers _ ->
-            case Dict.get (Results.ballotKey resp) model.decryptedBallots of
+            case Dict.get (Results.responseKey resp) model.decryptedResponses of
                 Just (Decrypted answerItems) ->
                     Just answerItems
 
@@ -1637,8 +1637,8 @@ viewSubmissionStatus status =
         NotSubmitting ->
             text ""
 
-        EncryptingBallot ->
-            p [ HA.class "loading" ] [ text "Encrypting ballot with Drand tlock..." ]
+        EncryptingResponse ->
+            p [ HA.class "loading" ] [ text "Encrypting response with Drand tlock..." ]
 
         WaitingForSignature _ ->
             p [ HA.class "loading" ] [ text "Waiting for wallet signature..." ]
@@ -1728,7 +1728,7 @@ submitResponse model =
                             ( { model | responseFormError = Just err }, Cmd.none )
 
                         Ok cred ->
-                            case target.definition.ballotMode of
+                            case target.definition.submissionMode of
                                 ST.Public ->
                                     case Form.buildResponseMetadatum { txHash = target.txHash, index = target.index } cred model.responseForm of
                                         Err err ->
@@ -1762,7 +1762,7 @@ submitResponse model =
                                                     in
                                                     ( { model
                                                         | taskPool = newPool
-                                                        , submissionStatus = EncryptingBallot
+                                                        , submissionStatus = EncryptingResponse
                                                         , responseFormError = Nothing
                                                       }
                                                     , cmd
@@ -2039,7 +2039,7 @@ viewResponse model maybeDef resp =
 
 viewTimelockedAnswers : Model -> Maybe ST.SurveyDefinition -> OnchainResponse -> Bytes.Bytes Bytes.Any -> Html Msg
 viewTimelockedAnswers model maybeDef resp blob =
-    case Maybe.map .ballotMode maybeDef of
+    case Maybe.map .submissionMode maybeDef of
         Just (ST.Timelocked cfg) ->
             let
                 revealTime =
@@ -2048,7 +2048,7 @@ viewTimelockedAnswers model maybeDef resp blob =
             if model.currentTime < revealTime then
                 p [ HA.class "meta" ]
                     [ text
-                        ("Locked timelocked ballot — revealable after Drand round "
+                        ("Locked timelocked response — revealable after Drand round "
                             ++ String.fromInt cfg.round
                             ++ " (~"
                             ++ Tlock.formatDuration (revealTime - model.currentTime)
@@ -2059,11 +2059,11 @@ viewTimelockedAnswers model maybeDef resp blob =
             else
                 let
                     key =
-                        Results.ballotKey resp
+                        Results.responseKey resp
                 in
-                case Dict.get key model.decryptedBallots of
+                case Dict.get key model.decryptedResponses of
                     Just Decrypting ->
-                        p [ HA.class "loading" ] [ text "Decrypting ballot..." ]
+                        p [ HA.class "loading" ] [ text "Decrypting response..." ]
 
                     Just (Decrypted items) ->
                         View.viewAnswerItems maybeDef items
@@ -2073,7 +2073,7 @@ viewTimelockedAnswers model maybeDef resp blob =
                             [ p [ HA.class "error" ] [ text err ]
                             , button
                                 [ HA.class "btn btn-sm"
-                                , onClick (RevealBallot cfg.round key (Bytes.toHex blob))
+                                , onClick (RevealResponse cfg.round key (Bytes.toHex blob))
                                 ]
                                 [ text "Retry reveal" ]
                             ]
@@ -2081,13 +2081,13 @@ viewTimelockedAnswers model maybeDef resp blob =
                     Nothing ->
                         button
                             [ HA.class "btn btn-primary"
-                            , onClick (RevealBallot cfg.round key (Bytes.toHex blob))
+                            , onClick (RevealResponse cfg.round key (Bytes.toHex blob))
                             ]
                             [ text "Reveal answers" ]
 
         _ ->
             p [ HA.class "meta" ]
-                [ text "Timelocked ballot (survey definition unknown — cannot determine reveal round)" ]
+                [ text "Timelocked response (survey definition unknown — cannot determine reveal round)" ]
 
 
 

@@ -1,12 +1,12 @@
 module Survey.Results exposing
-    ( ballotKey
-    , dedupLatestResponses
+    ( dedupLatestResponses
     , multiSelectCounts
+    , responseKey
     , singleChoiceCounts
     )
 
 {-| Pure aggregation over on-chain responses: filtering per survey, deduplicating
-to the latest ballot per identity, grouping by survey, and per-option tallies.
+to the latest response per identity, grouping by survey, and per-option tallies.
 -}
 
 import Dict exposing (Dict)
@@ -15,7 +15,7 @@ import Survey.Types as ST
 
 {-| Keep the latest response per identity tuple `(role, credential)` for one
 survey. Order-independent: latest is resolved from each tx's `absolute_slot`,
-tie-broken by `ballotIndex` (responseIndex). This does not depend on the
+tie-broken by `responseIndex`. This does not depend on the
 unspecified row order of the `/tx_metadata` response. The spec's full chain order
 is `(slot, txIndexInBlock, responseIndex)`; we don't fetch `txIndexInBlock`, so
 two responses in the same slot from different txs are only tie-broken weakly.
@@ -26,9 +26,9 @@ dedupLatestResponses txSlot responses =
         key r =
             ST.roleToString r.response.role ++ "|" ++ ST.credentialToHex r.response.responder
 
-        -- Larger tuple = more recent: higher absolute slot, then higher ballotIndex.
+        -- Larger tuple = more recent: higher absolute slot, then higher responseIndex.
         recency r =
-            ( Dict.get r.txHash txSlot |> Maybe.withDefault 0, r.ballotIndex )
+            ( Dict.get r.txHash txSlot |> Maybe.withDefault 0, r.responseIndex )
     in
     List.foldl
         (\r acc ->
@@ -52,13 +52,13 @@ dedupLatestResponses txSlot responses =
         |> Dict.values
 
 
-{-| Unique key for a timelocked ballot's decryption state: the submitting Tx
-hash plus the ballot's position within that Tx's ballot list. (Responder
-credential is not unique — one Tx may carry ballots for several surveys.)
+{-| Unique key for a timelocked response's decryption state: the submitting Tx
+hash plus the response's position within that Tx's response list. (Responder
+credential is not unique — one Tx may carry responses for several surveys.)
 -}
-ballotKey : ST.OnchainResponse -> String
-ballotKey resp =
-    resp.txHash ++ ":" ++ String.fromInt resp.ballotIndex
+responseKey : ST.OnchainResponse -> String
+responseKey resp =
+    resp.txHash ++ ":" ++ String.fromInt resp.responseIndex
 
 
 singleChoiceCounts : Int -> List String -> List ST.AnswerItem -> List Int

@@ -7,7 +7,7 @@ module Tlock exposing
     , roundForDeadline
     )
 
-{-| Drand `tlock` (timelock encryption) bindings for timelocked ballots.
+{-| Drand `tlock` (timelock encryption) bindings for timelocked responses.
 
 The crypto runs in JS (`static/tlock.js`, Drand quicknet) and is reached through
 two `elm-concurrent-task` tasks. Payloads cross the channel as lowercase hex.
@@ -112,7 +112,7 @@ encrypt args =
 
 {-| Fetch and verify the Drand beacon for a round. This is the only networked
 step of a reveal: fetch once per survey, then reuse the returned `beaconJson` to
-decrypt every ballot locally. Fails (throws JS-side) if the round is not yet
+decrypt every response locally. Fails (throws JS-side) if the round is not yet
 published.
 -}
 fetchRound : { round : Int } -> ConcurrentTask String { beaconJson : String }

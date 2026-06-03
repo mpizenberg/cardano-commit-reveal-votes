@@ -13,7 +13,7 @@ module Survey.Codec exposing
     , traverseResults
     )
 
-{-| CIP-179 wire codec: Metadatum <-> domain types, plus the worst-case ballot
+{-| CIP-179 wire codec: Metadatum <-> domain types, plus the worst-case response
 sizing used to pad timelocked ciphertexts. Pure and independent of form/UI state.
 -}
 
@@ -23,7 +23,7 @@ import Cardano.Metadatum as Metadatum exposing (Metadatum(..))
 import Cbor.Decode
 import Cbor.Encode
 import Integer
-import Survey.Types exposing (AnswerItem(..), BallotMode(..), NumericConstraints, ParsedPayload(..), ResponseAnswers(..), Role, SurveyDefinition, SurveyQuestion(..), SurveyRef, SurveyResponse, WeightingMode, intToRole, intToWeightingMode, roleToInt, weightingModeToInt)
+import Survey.Types exposing (AnswerItem(..), NumericConstraints, ParsedPayload(..), ResponseAnswers(..), Role, SubmissionMode(..), SurveyDefinition, SurveyQuestion(..), SurveyRef, SurveyResponse, WeightingMode, intToRole, intToWeightingMode, roleToInt, weightingModeToInt)
 
 
 
@@ -180,11 +180,11 @@ roleWeightingToMeta rws =
         )
 
 
-{-| Encode the ballot mode as a tagged sum: `[0]` for public, or
+{-| Encode the submission mode as a tagged sum: `[0]` for public, or
 `[1, chain_hash, round, padding_size]` for timelocked.
 -}
-ballotModeToMeta : BallotMode -> Metadatum
-ballotModeToMeta mode =
+submissionModeToMeta : SubmissionMode -> Metadatum
+submissionModeToMeta mode =
     case mode of
         Public ->
             List [ metaInt 0 ]
@@ -210,7 +210,7 @@ toMetadatum def =
                 , chunkedTextToMeta def.description
                 , roleWeightingToMeta def.roleWeighting
                 , metaInt def.endEpoch
-                , ballotModeToMeta def.ballotMode
+                , submissionModeToMeta def.submissionMode
                 , List (List.map questionToMeta def.questions)
                 ]
             ]
@@ -505,7 +505,7 @@ decodeDefinition m =
                             |> resultApply (decodeChunkedText descM)
                             |> resultApply (decodeRoleWeighting rwM)
                             |> resultApply (expectInt epochM)
-                            |> resultApply (decodeBallotMode modeM)
+                            |> resultApply (decodeSubmissionMode modeM)
                             |> resultApply (expectList questionsM |> Result.andThen (traverseResults decodeQuestion))
 
                     _ ->
@@ -513,11 +513,11 @@ decodeDefinition m =
             )
 
 
-{-| Decode the ballot-mode tagged sum: `[0]` => `Public`,
+{-| Decode the response-mode tagged sum: `[0]` => `Public`,
 `[1, chain_hash, round, padding_size]` => `Timelocked`.
 -}
-decodeBallotMode : Metadatum -> Result String BallotMode
-decodeBallotMode modeM =
+decodeSubmissionMode : Metadatum -> Result String SubmissionMode
+decodeSubmissionMode modeM =
     expectList modeM
         |> Result.andThen
             (\items ->
@@ -530,7 +530,7 @@ decodeBallotMode modeM =
                                         Ok Public
 
                                     else
-                                        Err ("Ballot mode [" ++ String.fromInt tag ++ "]: only tag 0 takes no parameters")
+                                        Err ("Submission mode [" ++ String.fromInt tag ++ "]: only tag 0 takes no parameters")
                                 )
 
                     [ tagM, chainHashM, roundM, paddingM ] ->
@@ -551,11 +551,11 @@ decodeBallotMode modeM =
                                             (expectInt paddingM)
 
                                     else
-                                        Err ("Unknown ballot mode tag: " ++ String.fromInt tag)
+                                        Err ("Unknown submission mode tag: " ++ String.fromInt tag)
                                 )
 
                     _ ->
-                        Err "Ballot mode: expected [0] or [1, chain_hash, round, padding_size]"
+                        Err "Submission mode: expected [0] or [1, chain_hash, round, padding_size]"
             )
 
 
@@ -764,7 +764,7 @@ responseEnvelope surveyRef role responder answersMeta =
         ]
 
 
-{-| Worst-case CBOR size (bytes) of a fully-answered ballot for these questions:
+{-| Worst-case CBOR size (bytes) of a fully-answered response for these questions:
 every question answered with its largest-encoding answer. Used as the default
 padding size so all ciphertexts for a survey share one length and thus leak
 nothing about their content.
@@ -906,7 +906,7 @@ decodeAnswersFromPlaintextHex hex =
                     Err "Decrypted CBOR is not an answer array"
 
                 Nothing ->
-                    Err "Failed to CBOR-decode the decrypted ballot"
+                    Err "Failed to CBOR-decode the decrypted response"
 
 
 buildCancellationMetadatum : SurveyRef -> Metadatum

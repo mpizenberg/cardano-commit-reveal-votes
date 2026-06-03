@@ -29,7 +29,7 @@ import Cardano.Address exposing (Credential(..))
 import Cardano.Metadatum exposing (Metadatum(..))
 import List.Extra
 import Survey.Codec exposing (maxPlaintextSize, metaInt, metaStr, responseEnvelope, resultApply, traverseResults)
-import Survey.Types exposing (BallotMode(..), Role(..), SurveyDefinition, SurveyQuestion(..), SurveyRef, WeightingMode(..), allRoles, allowedWeightings, quicknetChainHashHex, stringToRole, stringToWeightingMode)
+import Survey.Types exposing (Role(..), SubmissionMode(..), SurveyDefinition, SurveyQuestion(..), SurveyRef, WeightingMode(..), allRoles, allowedWeightings, quicknetChainHashHex, stringToRole, stringToWeightingMode)
 import Tlock
 
 
@@ -382,7 +382,7 @@ questionTypeToValue qt =
 -- ============================================================
 
 
-{-| Best-effort worst-case ballot size for the form's current questions, used to
+{-| Best-effort worst-case response size for the form's current questions, used to
 display the auto padding default. `Nothing` while questions are still invalid.
 -}
 formMaxPlaintextSize : SurveyForm -> Maybe Int
@@ -450,7 +450,7 @@ formToDefinition nowUnix defaultRevealDeadline form =
                             Err errMsg
                     )
 
-        validateBallotMode =
+        validateSubmissionMode =
             if form.timelocked then
                 let
                     validatePadding =
@@ -496,7 +496,7 @@ formToDefinition nowUnix defaultRevealDeadline form =
         |> resultApply validateDescription
         |> resultApply validateRoles
         |> resultApply validateEndEpoch
-        |> resultApply validateBallotMode
+        |> resultApply validateSubmissionMode
         |> resultApply validateQuestions
 
 

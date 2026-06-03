@@ -9,10 +9,10 @@ It supports the full survey lifecycle:
 
 - **Create** a survey (questions, roles, weighting, optional timelock) and submit
   it on-chain.
-- **Respond** to a survey, optionally as a **timelocked ballot** that stays
+- **Respond** to a survey, optionally as a **timelocked response** that stays
   encrypted until a chosen Drand round publishes (commit-reveal voting).
 - **Cancel** a survey you own.
-- **Browse** responses and live tallies, **reveal** timelocked ballots once
+- **Browse** responses and live tallies, **reveal** timelocked responses once
   unlocked, and **export** results to CSV.
 - **Share** a single-survey "kiosk" link that anyone can open to view/respond to
   one survey in isolation.
@@ -49,8 +49,8 @@ minimal/
     Tlock.elm                 -- Drand tlock timelock bindings (encrypt / fetchRound / decrypt)
     ProposalMetadata.elm      -- CIP-108 proposal metadata decoder (legacy, see below)
     Survey/
-      Types.elm               -- Domain types (surveys, questions, responses, roles, ballots)
-      Codec.elm               -- CIP-179 wire codec: Metadatum <-> domain + ballot padding
+      Types.elm               -- Domain types (surveys, questions, responses, roles, responses)
+      Codec.elm               -- CIP-179 wire codec: Metadatum <-> domain + response padding
       Labels.elm              -- Metadata label scheme (primary + secondary index labels)
       Form.elm                -- Survey-creation & response form state + validation
       View.elm                -- Survey/form rendering
@@ -64,7 +64,7 @@ minimal/
     tlock.js                  -- Drand tlock crypto bundle (esbuild of tlock-wrapper.ts)
     pkg-uplc-wasm/            -- UPLC WASM module for Plutus script evaluation
   tests/
-    SurveyTests.elm           -- Ballot-padding upper-bound checks
+    SurveyTests.elm           -- Response-padding upper-bound checks
 ```
 
 ## How it works
@@ -152,7 +152,7 @@ user opens a survey's responses (or kiosk mode loads it eagerly):
 (WebData ...)`), only when the user opens that survey's responses tab (or when
   kiosk mode focuses a survey). The "Responses" tab shows a _Load responses_
   button per survey rather than fetching everything upfront.
-- `Survey.Results.dedupLatestResponses` keeps the latest ballot per
+- `Survey.Results.dedupLatestResponses` keeps the latest response per
   `(role, credential)` identity, resolving "latest" by the tx's `absolute_slot`
   (tie-broken by response index).
 
@@ -172,12 +172,12 @@ index labels (a definition/cancellation also tags `1717170`; a response also tag
 its survey's `responseLabel`). Distinct metadata tags are merged into one tx;
 duplicate tags are rejected by elm-cardano.
 
-### Timelocked ballots and padding
+### Timelocked responses and padding
 
-A survey can be created with **timelocked ballots**: each response's answers are
+A survey can be created with **timelocked responses**: each response's answers are
 encrypted at submission with Drand `tlock` (quicknet) and only become decryptable
 once a chosen Drand round publishes. This is a _delayed reveal_, not permanent
-secrecy — after the round, anyone can decrypt every ballot. The crypto runs in
+secrecy — after the round, anyone can decrypt every response. The crypto runs in
 JS (`static/tlock.js`) and is reached from Elm through three
 `elm-concurrent-task` tasks (`tlock:encrypt` / `tlock:fetchRound` /
 `tlock:decrypt`, see `Tlock.elm`).
@@ -188,11 +188,11 @@ answered (e.g. how many options they selected). To avoid this, the CBOR-encoded
 answers are zero-padded up to a fixed `paddingSize` before encryption
 (`Survey.Codec.plaintextHexForAnswers`). Decryption ignores the trailing zeros
 because the CBOR answer array is self-delimiting. The padding size is stored once
-per survey in its on-chain metadata, so every ballot for that survey shares it.
+per survey in its on-chain metadata, so every response for that survey shares it.
 
 **Choosing the size automatically.** Leaving the "Padding size" field blank uses
 `Survey.Codec.maxPlaintextSize`, the worst-case CBOR size of a _fully answered_
-ballot for that survey's questions. Padding every ballot up to this value makes
+response for that survey's questions. Padding every response up to this value makes
 all ciphertexts the same length, so size leaks nothing. The estimate sums a
 per-question upper bound using the standard CBOR integer-width rules
 (0..23 -> 1 byte, 24..255 -> 2, ..., capped at the 64-bit form, 9 bytes):
@@ -211,13 +211,13 @@ Bounding it would require imposing an explicit maximum answer length. The other
 four question types are fully bounded, so for surveys without free text the
 auto-sized padding makes every ciphertext identical in length.
 
-`tests/SurveyTests.elm` validates this: it builds a maximal ballot, encodes it
+`tests/SurveyTests.elm` validates this: it builds a maximal response, encodes it
 through the real CBOR encoder, and checks the actual width never exceeds
 `maxPlaintextSize` (run with `elm-test`).
 
-### Revealing timelocked ballots (decoupled fetch + decrypt)
+### Revealing timelocked responses (decoupled fetch + decrypt)
 
-Every ballot of a survey is locked to the **same** Drand round, and a published
+Every response of a survey is locked to the **same** Drand round, and a published
 round's signature is immutable. So the round-fetch and the decryption are
 decoupled in the JS wrapper (`tlock-wrapper.ts`):
 
@@ -228,7 +228,7 @@ decoupled in the JS wrapper (`tlock-wrapper.ts`):
   still verifying it against the pinned quicknet chain info.
 
 On the Elm side, `roundBeacons : Dict Int (RemoteData ...)` caches the fetched
-beacon per round. Revealing a ballot fetches its round's beacon once; every
+beacon per round. Revealing a response fetches its round's beacon once; every
 subsequent reveal for that survey — including the **"Reveal all"** button —
 decrypts locally with **zero additional network requests**.
 
@@ -274,9 +274,9 @@ in `index.html`.
 - **Tlock.elm** — `encrypt` / `fetchRound` / `decrypt` ConcurrentTask bindings and
   the quicknet round/time helpers (`roundForDeadline`, `revealTimeOf`).
 - **Survey/Types.elm** — domain types: surveys, questions, roles, weighting,
-  responses, ballot/timelock config and state.
+  responses, response/timelock config and state.
 - **Survey/Codec.elm** — CIP-179 `Metadatum` <-> domain codec, response envelope,
-  and worst-case ballot sizing (`maxPlaintextSize`, `plaintextHexForAnswers`).
+  and worst-case response sizing (`maxPlaintextSize`, `plaintextHexForAnswers`).
 - **Survey/Labels.elm** — the metadata label scheme described above.
 - **Survey/Form.elm** — survey-creation and response form state, validation, and
   form -> metadatum encoders.
@@ -299,7 +299,7 @@ Key Elm package dependencies:
 - `krisajenkins/remotedata` — `WebData` loading states.
 - `robinheghan/fnv1a` — FNV-1a hashing for deterministic per-survey response labels.
 - `lydell/elm-app-url` — URL query-parameter parsing for kiosk mode.
-- `elm-toulouse/cbor` — CBOR encoding (ballot payloads; also used by elm-cardano).
+- `elm-toulouse/cbor` — CBOR encoding (response payloads; also used by elm-cardano).
 - `elm-cardano/bech32` — Bech32 encoding for Cardano addresses and IDs.
 
 JS-side: `@mpizenberg/tlock-js` (Drand quicknet timelock), bundled into

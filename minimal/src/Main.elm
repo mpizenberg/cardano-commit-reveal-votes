@@ -568,12 +568,15 @@ update msg model =
                     let
                         txHashes =
                             List.map .txHash txSlots
+
+                        newSlots =
+                            List.foldl (\r -> Dict.insert r.txHash r.absoluteSlot) model.surveyTxSlot txSlots
                     in
                     if List.isEmpty txHashes then
-                        ( { model | onchainSurveys = Success [] }, Cmd.none )
+                        ( { model | onchainSurveys = Success [], surveyTxSlot = newSlots }, Cmd.none )
 
                     else
-                        ( model, Api.loadSurveyMetadata model.networkId txHashes GotDirectoryMetadata )
+                        ( { model | surveyTxSlot = newSlots }, Api.loadSurveyMetadata model.networkId txHashes GotDirectoryMetadata )
 
         GotDirectoryMetadata result ->
             case result of
@@ -612,6 +615,9 @@ update msg model =
                                             []
                                 )
                                 parsed
+                                -- Newest first: order by the tx's absolute slot (desc).
+                                -- sortBy is stable, so multiple defs in one tx keep their index order.
+                                |> List.sortBy (\s -> negate (Maybe.withDefault 0 (Dict.get s.txHash model.surveyTxSlot)))
 
                         cancellations =
                             List.concatMap
@@ -712,7 +718,8 @@ update msg model =
                     ( { model | responsesBySurvey = Dict.insert (surveyRefKey ref) (Success responses) model.responsesBySurvey }, Cmd.none )
 
 
-{-| Current epoch number, derived from the chain tip. -}
+{-| Current epoch number, derived from the chain tip.
+-}
 currentEpoch : Model -> WebData Int
 currentEpoch model =
     RemoteData.map .epoch model.chainTip

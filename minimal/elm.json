@@ -26,6 +26,7 @@
             "elmcraft/core-extra": "2.2.0",
             "krisajenkins/remotedata": "6.1.0",
             "lydell/elm-app-url": "1.0.4",
+            "robinheghan/fnv1a": "1.0.0",
             "turboMaCk/any-dict": "2.6.0"
         },
         "indirect": {

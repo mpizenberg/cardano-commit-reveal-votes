@@ -1,10 +1,7 @@
 module Survey.Results exposing
-    ( ResponseGroup
-    , ballotKey
+    ( ballotKey
     , dedupLatestResponses
-    , groupResponsesBySurvey
     , multiSelectCounts
-    , responsesForSurvey
     , singleChoiceCounts
     )
 
@@ -14,13 +11,6 @@ to the latest ballot per identity, grouping by survey, and per-option tallies.
 
 import Dict exposing (Dict)
 import Survey.Types as ST
-
-
-responsesForSurvey : ST.OnchainSurvey -> List ST.OnchainResponse -> List ST.OnchainResponse
-responsesForSurvey survey responses =
-    List.filter
-        (\r -> r.response.surveyRef.txHash == survey.txHash && r.response.surveyRef.index == survey.index)
-        responses
 
 
 {-| Keep the latest response per identity tuple `(role, credential)` for one
@@ -54,49 +44,6 @@ dedupLatestResponses txSlot responses =
 
                         Nothing ->
                             Just r
-                )
-                acc
-        )
-        Dict.empty
-        responses
-        |> Dict.values
-
-
-type alias ResponseGroup =
-    { survey : Maybe ST.OnchainSurvey
-    , surveyRef : ST.SurveyRef
-    , responses : List ST.OnchainResponse
-    }
-
-
-groupResponsesBySurvey : List ST.OnchainSurvey -> List ST.OnchainResponse -> List ResponseGroup
-groupResponsesBySurvey surveys responses =
-    let
-        refKey ref =
-            ref.txHash ++ ":" ++ String.fromInt ref.index
-
-        surveyDict =
-            List.map (\s -> ( s.txHash ++ ":" ++ String.fromInt s.index, s )) surveys
-                |> Dict.fromList
-    in
-    List.foldl
-        (\resp acc ->
-            let
-                key =
-                    refKey resp.response.surveyRef
-            in
-            Dict.update key
-                (\existing ->
-                    case existing of
-                        Just group ->
-                            Just { group | responses = group.responses ++ [ resp ] }
-
-                        Nothing ->
-                            Just
-                                { survey = Dict.get key surveyDict
-                                , surveyRef = resp.response.surveyRef
-                                , responses = [ resp ]
-                                }
                 )
                 acc
         )

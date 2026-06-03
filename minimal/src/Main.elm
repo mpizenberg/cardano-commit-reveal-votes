@@ -29,6 +29,7 @@ import Route
 import Survey.Codec as Codec
 import Survey.Csv as Csv
 import Survey.Form as Form
+import Survey.Labels as Labels
 import Survey.Results as Results
 import Survey.Types as ST exposing (BallotState(..), OnchainResponse, OnchainSurvey)
 import Survey.View as View
@@ -97,7 +98,7 @@ type alias Model =
     , surveyFormError : Maybe String
     , createdSurveys : List ST.SurveyDefinition
     , onchainSurveys : WebData (List OnchainSurvey)
-    , onchainResponses : List OnchainResponse
+    , responsesBySurvey : Dict String (WebData (List OnchainResponse))
     , onchainCancellations : List ST.SurveyRef
     , surveyTxSlot : Dict String Int
     , walletUtxos : Maybe (Utxo.RefDict Output)
@@ -137,7 +138,7 @@ init flags =
             , surveyFormError = Nothing
             , createdSurveys = []
             , onchainSurveys = NotAsked
-            , onchainResponses = []
+            , responsesBySurvey = Dict.empty
             , onchainCancellations = []
             , surveyTxSlot = Dict.empty
             , walletUtxos = Nothing
@@ -161,6 +162,33 @@ init flags =
 
 
 
+{-| Cache/lookup key for a survey ref (also the responseLabel input shape).
+-}
+surveyRefKey : { a | txHash : String, index : Int } -> String
+surveyRefKey r =
+    r.txHash ++ ":" ++ String.fromInt r.index
+
+
+{-| Kick off the per-survey response load: query that survey's `responseLabel`,
+then fetch and decode only those response txs.
+-}
+loadResponsesFor : Model -> ST.SurveyRef -> ( Model, Cmd Msg )
+loadResponsesFor model ref =
+    ( { model | responsesBySurvey = Dict.insert (surveyRefKey ref) Loading model.responsesBySurvey }
+    , Api.loadTxHashesByLabel model.networkId (Labels.responseLabel ref) (GotResponseTxHashes ref)
+    )
+
+
+{-| Already-loaded responses for a survey (empty until its per-survey load completes).
+-}
+cachedResponses : Model -> { a | txHash : String, index : Int } -> List OnchainResponse
+cachedResponses model ref =
+    Dict.get (surveyRefKey ref) model.responsesBySurvey
+        |> Maybe.andThen RemoteData.toMaybe
+        |> Maybe.withDefault []
+
+
+
 -- MSG
 
 
@@ -177,8 +205,11 @@ type Msg
     | ResponseFormMsg Form.ResponseFormMsg
     | CancelSurvey OnchainSurvey
     | ConfirmCancelSurvey
-    | GotSurveyTxHashes (Result Http.Error (List Api.SurveyTxSlot))
-    | GotSurveyMetadata (Result Http.Error (List Api.SurveyTxMetadata))
+    | GotDirectoryTxHashes (Result Http.Error (List Api.SurveyTxSlot))
+    | GotDirectoryMetadata (Result Http.Error (List Api.SurveyTxMetadata))
+    | LoadResponses ST.SurveyRef
+    | GotResponseTxHashes ST.SurveyRef (Result Http.Error (List Api.SurveyTxSlot))
+    | GotResponseMetadata ST.SurveyRef (Result Http.Error (List Api.SurveyTxMetadata))
     | Tick Time.Posix
     | TimelockEncrypted (ConcurrentTask.Response String { ciphertextHex : String })
     | RevealBallot String String
@@ -219,7 +250,7 @@ update msg model =
                                 form
                     in
                     ( { model | epoch = Success epoch, surveyForm = prefilledForm, proposals = Loading, onchainSurveys = Loading }
-                    , Api.loadSurveyTxHashes model.networkId GotSurveyTxHashes
+                    , Api.loadTxHashesByLabel model.networkId Labels.definitionsLabel GotDirectoryTxHashes
                     )
 
         WalletMsg value ->
@@ -334,7 +365,7 @@ update msg model =
         ExportCsv survey ->
             let
                 deduped =
-                    Results.dedupLatestResponses model.surveyTxSlot (Results.responsesForSurvey survey model.onchainResponses)
+                    Results.dedupLatestResponses model.surveyTxSlot (cachedResponses model survey)
 
                 filename =
                     "survey-" ++ survey.txHash ++ "-" ++ String.fromInt survey.index ++ ".csv"
@@ -401,28 +432,23 @@ update msg model =
                     , Cmd.none
                     )
 
-        GotSurveyTxHashes result ->
+        GotDirectoryTxHashes result ->
             case result of
                 Err err ->
                     ( { model | onchainSurveys = Failure err }, Cmd.none )
 
                 Ok txSlots ->
                     let
-                        -- Keep each tx's absolute slot to resolve "latest response"
-                        -- deterministically, independent of /tx_metadata's row order.
-                        txSlot =
-                            List.map (\r -> ( r.txHash, r.absoluteSlot )) txSlots |> Dict.fromList
-
                         txHashes =
                             List.map .txHash txSlots
                     in
                     if List.isEmpty txHashes then
-                        ( { model | onchainSurveys = Success [], surveyTxSlot = txSlot }, Cmd.none )
+                        ( { model | onchainSurveys = Success [] }, Cmd.none )
 
                     else
-                        ( { model | surveyTxSlot = txSlot }, Api.loadSurveyMetadata model.networkId txHashes GotSurveyMetadata )
+                        ( model, Api.loadSurveyMetadata model.networkId txHashes GotDirectoryMetadata )
 
-        GotSurveyMetadata result ->
+        GotDirectoryMetadata result ->
             case result of
                 Err err ->
                     ( { model | onchainSurveys = Failure err }, Cmd.none )
@@ -460,20 +486,6 @@ update msg model =
                                 )
                                 parsed
 
-                        responses =
-                            List.concatMap
-                                (\( txMeta, payload ) ->
-                                    case payload of
-                                        ST.ParsedResponses resps ->
-                                            List.indexedMap
-                                                (\i r -> { txHash = txMeta.txHash, ballotIndex = i, response = r })
-                                                resps
-
-                                        _ ->
-                                            []
-                                )
-                                parsed
-
                         cancellations =
                             List.concatMap
                                 (\( _, payload ) ->
@@ -500,16 +512,77 @@ update msg model =
 
                                 _ ->
                                     ( model.responseTarget, model.responseForm )
+
+                        directoryModel =
+                            { model
+                                | onchainSurveys = Success surveys
+                                , onchainCancellations = cancellations
+                                , responseTarget = focusTarget
+                                , responseForm = focusForm
+                            }
                     in
-                    ( { model
-                        | onchainSurveys = Success surveys
-                        , onchainResponses = responses
-                        , onchainCancellations = cancellations
-                        , responseTarget = focusTarget
-                        , responseForm = focusForm
-                      }
-                    , Cmd.none
-                    )
+                    -- In kiosk mode, immediately load the focused survey's responses.
+                    case model.focus of
+                        Route.Focus ref ->
+                            loadResponsesFor directoryModel ref
+
+                        _ ->
+                            ( directoryModel, Cmd.none )
+
+        LoadResponses ref ->
+            loadResponsesFor model ref
+
+        GotResponseTxHashes ref result ->
+            case result of
+                Err err ->
+                    ( { model | responsesBySurvey = Dict.insert (surveyRefKey ref) (Failure err) model.responsesBySurvey }, Cmd.none )
+
+                Ok txSlots ->
+                    let
+                        -- Keep each tx's absolute slot to resolve "latest response"
+                        -- deterministically, independent of /tx_metadata's row order.
+                        newSlots =
+                            List.foldl (\r -> Dict.insert r.txHash r.absoluteSlot) model.surveyTxSlot txSlots
+
+                        txHashes =
+                            List.map .txHash txSlots
+                    in
+                    if List.isEmpty txHashes then
+                        ( { model
+                            | surveyTxSlot = newSlots
+                            , responsesBySurvey = Dict.insert (surveyRefKey ref) (Success []) model.responsesBySurvey
+                          }
+                        , Cmd.none
+                        )
+
+                    else
+                        ( { model | surveyTxSlot = newSlots }
+                        , Api.loadSurveyMetadata model.networkId txHashes (GotResponseMetadata ref)
+                        )
+
+        GotResponseMetadata ref result ->
+            case result of
+                Err err ->
+                    ( { model | responsesBySurvey = Dict.insert (surveyRefKey ref) (Failure err) model.responsesBySurvey }, Cmd.none )
+
+                Ok txMetaList ->
+                    let
+                        -- The responseLabel query may include false positives from
+                        -- label collisions, so validate each body's surveyRef.
+                        responses =
+                            List.concatMap
+                                (\txMeta ->
+                                    case Codec.fromMetadatum txMeta.metadatum of
+                                        Ok (ST.ParsedResponses resps) ->
+                                            List.indexedMap (\i r -> { txHash = txMeta.txHash, ballotIndex = i, response = r }) resps
+
+                                        _ ->
+                                            []
+                                )
+                                txMetaList
+                                |> List.filter (\r -> r.response.surveyRef.txHash == ref.txHash && r.response.surveyRef.index == ref.index)
+                    in
+                    ( { model | responsesBySurvey = Dict.insert (surveyRefKey ref) (Success responses) model.responsesBySurvey }, Cmd.none )
 
 
 submitSurvey : Model -> ( Model, Cmd Msg )
@@ -545,7 +618,8 @@ submitSurvey model =
 
                         txResult =
                             TxIntent.finalize utxos
-                                (TxMetadata { tag = N.fromSafeInt ST.metadataLabel, metadata = surveyMetadatum }
+                                (TxMetadata { tag = N.fromSafeInt Labels.metadataLabel, metadata = surveyMetadatum }
+                                    :: TxMetadata { tag = N.fromSafeInt Labels.definitionsLabel, metadata = Metadatum.List [] }
                                     :: requiredSignerInfo
                                 )
                                 [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
@@ -789,8 +863,12 @@ viewKioskSurvey model survey =
             List.any (\ref -> ref.txHash == survey.txHash && ref.index == survey.index)
                 model.onchainCancellations
 
+        responsesState =
+            Dict.get (surveyRefKey survey) model.responsesBySurvey
+                |> Maybe.withDefault NotAsked
+
         deduped =
-            Results.dedupLatestResponses model.surveyTxSlot (Results.responsesForSurvey survey model.onchainResponses)
+            Results.dedupLatestResponses model.surveyTxSlot (cachedResponses model survey)
     in
     div []
         [ if isCancelled then
@@ -803,6 +881,15 @@ viewKioskSurvey model survey =
             text ""
         , p [ HA.class "meta" ]
             [ text ("Tx: " ++ survey.txHash ++ " [" ++ String.fromInt survey.index ++ "]") ]
+        , case responsesState of
+            Loading ->
+                p [ HA.class "loading" ] [ text "Loading responses..." ]
+
+            Failure _ ->
+                p [ HA.class "error" ] [ text "Failed to load responses." ]
+
+            _ ->
+                text ""
         , if isCancelled then
             text ""
 
@@ -1322,7 +1409,7 @@ viewCreateSurveyTab model =
         , case Form.formToDefinition model.currentTime model.surveyForm of
             Ok def ->
                 div [ HA.class "metadatum-preview" ]
-                    [ h3 [] [ text ("Preview: Metadatum (label " ++ String.fromInt ST.metadataLabel ++ ")") ]
+                    [ h3 [] [ text ("Preview: Metadatum (label " ++ String.fromInt Labels.metadataLabel ++ ")") ]
                     , pre [] [ text (View.metadatumToString (Codec.toMetadatum def)) ]
                     ]
 
@@ -1484,10 +1571,22 @@ buildSignResponseTx model responseMeta =
                                 ScriptHash _ ->
                                     []
 
+                        responseLabelInfo =
+                            case model.responseTarget of
+                                Just survey ->
+                                    [ TxMetadata
+                                        { tag = N.fromSafeInt (Labels.responseLabel { txHash = survey.txHash, index = survey.index })
+                                        , metadata = Metadatum.List []
+                                        }
+                                    ]
+
+                                Nothing ->
+                                    []
+
                         txResult =
                             TxIntent.finalize utxos
-                                (TxMetadata { tag = N.fromSafeInt ST.metadataLabel, metadata = responseMeta }
-                                    :: requiredSignerInfo
+                                (TxMetadata { tag = N.fromSafeInt Labels.metadataLabel, metadata = responseMeta }
+                                    :: (responseLabelInfo ++ requiredSignerInfo)
                                 )
                                 [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
                     in
@@ -1600,7 +1699,9 @@ submitCancellation model =
 
                         txResult =
                             TxIntent.finalize utxos
-                                (TxMetadata { tag = N.fromSafeInt ST.metadataLabel, metadata = cancellationMeta }
+                                (TxMetadata { tag = N.fromSafeInt Labels.metadataLabel, metadata = cancellationMeta }
+                                    :: TxMetadata { tag = N.fromSafeInt Labels.definitionsLabel, metadata = Metadatum.List [] }
+                                    :: TxMetadata { tag = N.fromSafeInt (Labels.responseLabel surveyRef), metadata = Metadatum.List [] }
                                     :: requiredSignerInfo
                                 )
                                 [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
@@ -1635,62 +1736,69 @@ viewResponsesTab model =
 
         Success surveys ->
             let
-                isCancelledRef ref =
-                    List.any (\c -> c.txHash == ref.txHash && c.index == ref.index)
+                isCancelled survey =
+                    List.any (\c -> c.txHash == survey.txHash && c.index == survey.index)
                         model.onchainCancellations
 
-                nonCancelledResponses =
-                    List.filter (\r -> not (isCancelledRef r.response.surveyRef))
-                        model.onchainResponses
+                activeSurveys =
+                    List.filter (not << isCancelled) surveys
             in
-            if List.isEmpty nonCancelledResponses then
+            if List.isEmpty activeSurveys then
                 div [ HA.class "empty-state" ]
-                    [ p [] [ text "No survey responses found on-chain." ] ]
+                    [ p [] [ text "No surveys on-chain." ] ]
 
             else
-                let
-                    groups =
-                        Results.groupResponsesBySurvey surveys nonCancelledResponses
-                in
                 div []
                     [ p [ HA.class "meta" ]
-                        [ text
-                            (String.fromInt (List.length nonCancelledResponses)
-                                ++ " response(s) across "
-                                ++ String.fromInt (List.length groups)
-                                ++ " survey(s)"
-                            )
-                        ]
+                        [ text "Select a survey to load its on-chain responses." ]
                     , div [ HA.class "proposals" ]
-                        (List.map (viewResponseGroup model) groups)
+                        (List.map (viewResponsesForSurvey model) activeSurveys)
                     ]
 
 
-viewResponseGroup : Model -> Results.ResponseGroup -> Html Msg
-viewResponseGroup model group =
+{-| One survey card in the Responses tab. Responses load on demand (per-survey
+`responseLabel` query) when the user clicks, rather than all upfront.
+-}
+viewResponsesForSurvey : Model -> OnchainSurvey -> Html Msg
+viewResponsesForSurvey model survey =
     let
-        maybeDef =
-            Maybe.map .definition group.survey
+        ref =
+            { txHash = survey.txHash, index = survey.index }
+
+        state =
+            Dict.get (surveyRefKey survey) model.responsesBySurvey
+                |> Maybe.withDefault NotAsked
     in
     div [ HA.class "survey-card" ]
-        [ case group.survey of
-            Just survey ->
+        [ h3 [] [ text survey.definition.title ]
+        , p [ HA.class "meta" ]
+            [ text ("Tx: " ++ survey.txHash ++ " [" ++ String.fromInt survey.index ++ "]") ]
+        , case state of
+            NotAsked ->
+                button [ HA.class "btn btn-primary", onClick (LoadResponses ref) ]
+                    [ text "Load responses" ]
+
+            Loading ->
+                p [ HA.class "loading" ] [ text "Loading responses..." ]
+
+            Failure _ ->
                 div []
-                    [ h3 [] [ text survey.definition.title ]
-                    , p [ HA.class "meta" ]
-                        [ text ("Tx: " ++ group.surveyRef.txHash ++ " [" ++ String.fromInt group.surveyRef.index ++ "]") ]
+                    [ p [ HA.class "error" ] [ text "Failed to load responses." ]
+                    , button [ HA.class "btn", onClick (LoadResponses ref) ] [ text "Retry" ]
                     ]
 
-            Nothing ->
-                div []
-                    [ h3 [] [ text "Unknown survey" ]
-                    , p [ HA.class "meta" ]
-                        [ text ("Ref: " ++ group.surveyRef.txHash ++ " [" ++ String.fromInt group.surveyRef.index ++ "]") ]
-                    ]
-        , p [ HA.class "meta" ]
-            [ text (String.fromInt (List.length group.responses) ++ " response(s)") ]
-        , div []
-            (List.map (viewResponse model maybeDef) group.responses)
+            Success responses ->
+                if List.isEmpty responses then
+                    p [ HA.class "meta" ] [ text "No responses yet." ]
+
+                else
+                    div []
+                        [ p [ HA.class "meta" ]
+                            [ text (String.fromInt (List.length responses) ++ " response(s)") ]
+                        , div []
+                            (List.map (viewResponse model (Just survey.definition)) responses)
+                        , button [ HA.class "btn", onClick (LoadResponses ref) ] [ text "Refresh" ]
+                        ]
         ]
 
 

@@ -19,7 +19,6 @@ module Survey.Types exposing
     , credentialToHex
     , intToRole
     , intToWeightingMode
-    , metadataLabel
     , questionOptions
     , questionPrompt
     , quicknetChainHashHex
@@ -45,14 +44,6 @@ import Cardano.Metadatum exposing (Metadatum)
 -- ============================================================
 -- CIP-179 CONSTANTS
 -- ============================================================
-
-
-{-| Metadata label for CIP-179 surveys.
-Using 171717 instead of 17 to avoid collisions during experimentation.
--}
-metadataLabel : Int
-metadataLabel =
-    171717
 
 
 {-| Drand quicknet chain hash (pinned). Matches `static/tlock.js`.

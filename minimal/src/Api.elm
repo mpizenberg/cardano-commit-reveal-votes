@@ -1,4 +1,4 @@
-module Api exposing (ActiveProposal, ProtocolParams, SurveyTxMetadata, SurveyTxSlot, loadProtocolParams, loadSurveyMetadata, loadSurveyTxHashes, queryEpoch)
+module Api exposing (ActiveProposal, ProtocolParams, SurveyTxMetadata, SurveyTxSlot, loadProtocolParams, loadSurveyMetadata, loadTxHashesByLabel, queryEpoch)
 
 {-| Minimal API module for fetching Cardano governance data from Koios.
 -}
@@ -13,7 +13,7 @@ import Json.Decode as JD exposing (Decoder)
 import Json.Encode as JE
 import ProposalMetadata exposing (ProposalMetadata)
 import RemoteData exposing (RemoteData)
-import Survey.Types as Survey
+import Survey.Labels as Labels
 
 
 {-| Free Tier Koios API token.
@@ -120,11 +120,11 @@ type alias SurveyTxSlot =
     }
 
 
-loadSurveyTxHashes : NetworkId -> (Result Http.Error (List SurveyTxSlot) -> msg) -> Cmd msg
-loadSurveyTxHashes networkId toMsg =
+loadTxHashesByLabel : NetworkId -> Int -> (Result Http.Error (List SurveyTxSlot) -> msg) -> Cmd msg
+loadTxHashesByLabel networkId label toMsg =
     Http.request
         { method = "GET"
-        , url = koiosUrl networkId ++ "/tx_by_metalabel?_label=" ++ String.fromInt Survey.metadataLabel ++ "&order=tx_timestamp.desc&limit=100"
+        , url = koiosUrl networkId ++ "/tx_by_metalabel?_label=" ++ String.fromInt label ++ "&order=absolute_slot.desc&limit=100"
         , headers = [ Http.header "Authorization" ("Bearer " ++ koiosApiToken) ]
         , body = Http.emptyBody
         , expect =
@@ -169,7 +169,7 @@ txSurveyMetadataDecoder : Decoder SurveyTxMetadata
 txSurveyMetadataDecoder =
     JD.map2 SurveyTxMetadata
         (JD.field "tx_hash" JD.string)
-        (JD.at [ "metadata", String.fromInt Survey.metadataLabel ] koiosMetadatumDecoder)
+        (JD.at [ "metadata", String.fromInt Labels.metadataLabel ] koiosMetadatumDecoder)
 
 
 

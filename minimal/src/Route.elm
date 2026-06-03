@@ -1,12 +1,23 @@
-module Route exposing (SurveyFocus(..), parseFocus)
+module Route exposing (ParsedUrl, SurveyFocus(..), parseUrl)
 
-{-| URL routing: parse the page URL into a single-survey ("kiosk") focus.
+{-| URL routing: parse the page URL into the target network and an optional
+single-survey ("kiosk") focus.
 -}
 
 import AppUrl
+import Cardano.Address exposing (NetworkId(..))
 import Dict
 import Survey.Types as ST
 import Url
+
+
+{-| Everything read from the initial page URL: the target network and the
+optional single-survey ("kiosk") focus.
+-}
+type alias ParsedUrl =
+    { networkId : NetworkId
+    , focus : SurveyFocus
+    }
 
 
 {-| URL-driven single-survey ("kiosk") focus, parsed once from `flags.url`.
@@ -17,23 +28,46 @@ type SurveyFocus
     | Focus ST.SurveyRef
 
 
-{-| Parse the initial page URL into a survey focus. A `?survey=<txHash>[:<index>]`
-query parameter switches the app into single-survey kiosk mode. No parameter keeps
-the normal tabbed app; a present-but-malformed value yields an error page.
+{-| Parse the initial page URL once into network selection plus survey focus.
+
+  - `network`: `mainnet` selects Mainnet; `preview`, any other value, or absence
+    defaults to Preview (Testnet). Case-insensitive.
+  - `survey=<txHash>[:<index>]` switches into single-survey kiosk mode. No
+    parameter keeps the normal tabbed app; a present-but-malformed value yields
+    an error focus.
+
 -}
-parseFocus : String -> SurveyFocus
-parseFocus rawUrl =
+parseUrl : String -> ParsedUrl
+parseUrl rawUrl =
     case Url.fromString rawUrl of
         Nothing ->
-            NoFocus
+            { networkId = Testnet, focus = NoFocus }
 
         Just url ->
-            case Dict.get "survey" (AppUrl.fromUrl url).queryParameters |> Maybe.andThen List.head of
-                Nothing ->
-                    NoFocus
+            let
+                param name =
+                    Dict.get name (AppUrl.fromUrl url).queryParameters
+                        |> Maybe.andThen List.head
+            in
+            { networkId =
+                case param "network" of
+                    Just value ->
+                        if String.toLower value == "mainnet" then
+                            Mainnet
 
-                Just raw ->
-                    parseSurveyRef raw
+                        else
+                            Testnet
+
+                    Nothing ->
+                        Testnet
+            , focus =
+                case param "survey" of
+                    Nothing ->
+                        NoFocus
+
+                    Just raw ->
+                        parseSurveyRef raw
+            }
 
 
 parseSurveyRef : String -> SurveyFocus

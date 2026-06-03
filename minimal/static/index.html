@@ -287,7 +287,8 @@
                 flags: {
                     url: window.location.href,
                     db: db,
-                    networkId: 0, // 0: Preview/Testnet, 1: Mainnet
+                    // Network is selected from the `network` URL query param
+                    // ("mainnet" => Mainnet; "preview"/absent => Preview).
                 },
             });
 

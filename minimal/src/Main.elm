@@ -81,7 +81,6 @@ type SubmissionStatus
 type alias Flags =
     { url : String
     , db : Value
-    , networkId : Int
     }
 
 
@@ -122,16 +121,15 @@ type alias Model =
 init : Flags -> ( Model, Cmd Msg )
 init flags =
     let
-        networkId =
-            if flags.networkId == 1 then
-                Mainnet
+        parsedUrl =
+            Route.parseUrl flags.url
 
-            else
-                Testnet
+        networkId =
+            parsedUrl.networkId
 
         model =
             { networkId = networkId
-            , focus = Route.parseFocus flags.url
+            , focus = parsedUrl.focus
             , baseUrl = baseUrlOf flags.url
             , copiedKioskLink = Nothing
             , db = flags.db
@@ -184,11 +182,25 @@ baseUrlOf rawUrl =
     rawUrl |> before "#" |> before "?"
 
 
-{-| Shareable single-survey ("kiosk") link for a survey, matching `Route.parseFocus`.
+{-| Canonical `network` query-param value, matching `Route.parseNetwork`.
 -}
-kioskUrl : String -> { a | txHash : String, index : Int } -> String
-kioskUrl base ref =
-    base ++ "?survey=" ++ ref.txHash ++ ":" ++ String.fromInt ref.index
+networkParam : NetworkId -> String
+networkParam networkId =
+    case networkId of
+        Mainnet ->
+            "mainnet"
+
+        Testnet ->
+            "preview"
+
+
+{-| Shareable single-survey ("kiosk") link for a survey, matching
+`Route.parseFocus` and `Route.parseNetwork`. The network is pinned so the link
+opens on the same network it was shared from.
+-}
+kioskUrl : String -> NetworkId -> { a | txHash : String, index : Int } -> String
+kioskUrl base networkId ref =
+    base ++ "?survey=" ++ ref.txHash ++ ":" ++ String.fromInt ref.index ++ "&network=" ++ networkParam networkId
 
 
 {-| Cache/lookup key for a survey ref (also the responseLabel input shape).
@@ -315,6 +327,7 @@ type Msg
     | ExportCsv OnchainSurvey
     | CopyKioskLink String
     | DismissErrors
+    | ToggleNetwork
 
 
 
@@ -504,6 +517,38 @@ update msg model =
 
         DismissErrors ->
             ( { model | errors = [] }, Cmd.none )
+
+        ToggleNetwork ->
+            let
+                newNetwork =
+                    toggleNetworkId model.networkId
+            in
+            -- Switching network invalidates everything fetched for the old one:
+            -- the connected wallet (network-bound), all on-chain data, and any
+            -- in-flight submission. Re-run the bootstrap loads; `queryTip`
+            -- cascades into the survey-directory load.
+            ( { model
+                | networkId = newNetwork
+                , wallet = Nothing
+                , walletUtxos = Nothing
+                , walletError = Nothing
+                , submissionStatus = NotSubmitting
+                , protocolParams = Nothing
+                , chainTip = Loading
+                , proposals = NotAsked
+                , onchainSurveys = Loading
+                , responsesBySurvey = Dict.empty
+                , onchainCancellations = []
+                , surveyTxSlot = Dict.empty
+                , createdSurveys = []
+                , responseTarget = Nothing
+                , cancelTarget = Nothing
+              }
+            , Cmd.batch
+                [ Api.loadProtocolParams newNetwork GotProtocolParams
+                , Api.queryTip newNetwork GotTip
+                ]
+            )
 
         TabClicked tab ->
             ( { model | activeTab = tab }, Cmd.none )
@@ -1425,7 +1470,10 @@ tabButton tab label activeTab =
 viewNetworkInfo : NetworkId -> Html Msg
 viewNetworkInfo networkId =
     p [ HA.class "meta" ]
-        [ text ("Network: " ++ networkIdName networkId) ]
+        [ text ("Network: " ++ networkIdName networkId ++ " ")
+        , button [ onClick ToggleNetwork ]
+            [ text ("Switch to " ++ networkIdName (toggleNetworkId networkId)) ]
+        ]
 
 
 viewWalletBar : Model -> Html Msg
@@ -1565,7 +1613,7 @@ viewOnchainSurvey : Model -> OnchainSurvey -> Html Msg
 viewOnchainSurvey model survey =
     let
         shareLink =
-            kioskUrl model.baseUrl survey
+            kioskUrl model.baseUrl model.networkId survey
     in
     div []
         [ View.viewSurvey survey.definition
@@ -1709,6 +1757,18 @@ networkIdName networkId =
 
         Testnet ->
             "Preview (Testnet)"
+
+
+{-| The other network, for the network-switch toggle.
+-}
+toggleNetworkId : NetworkId -> NetworkId
+toggleNetworkId networkId =
+    case networkId of
+        Mainnet ->
+            Testnet
+
+        Testnet ->
+            Mainnet
 
 
 {-| Guard: the connected wallet must operate on the same network the app targets.

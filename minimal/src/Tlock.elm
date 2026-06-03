@@ -1,6 +1,7 @@
 module Tlock exposing
     ( decrypt
     , encrypt
+    , fetchRound
     , revealTimeOf
     , roundForDeadline
     )
@@ -74,11 +75,30 @@ encrypt args =
         }
 
 
-{-| Decrypt an armor-stripped age payload (hex). Reads the round from the blob,
-fetches the round signature from Drand, and decrypts. Fails (throws JS-side) if
-the round has not yet been published.
+{-| Fetch and verify the Drand beacon for a round. This is the only networked
+step of a reveal: fetch once per survey, then reuse the returned `beaconJson` to
+decrypt every ballot locally. Fails (throws JS-side) if the round is not yet
+published.
 -}
-decrypt : { ciphertextHex : String } -> ConcurrentTask String { plaintextHex : String }
+fetchRound : { round : Int } -> ConcurrentTask String { beaconJson : String }
+fetchRound args =
+    ConcurrentTask.define
+        { function = "tlock:fetchRound"
+        , expect =
+            ConcurrentTask.expectJson
+                (JD.map (\b -> { beaconJson = b }) (JD.field "beaconJson" JD.string))
+        , errors = ConcurrentTask.expectThrows identity
+        , args =
+            JE.object
+                [ ( "round", JE.int args.round ) ]
+        }
+
+
+{-| Decrypt an armor-stripped age payload (hex) using a `beaconJson` obtained
+from `fetchRound`. Pure/offline (no network); the beacon is still verified
+locally against the pinned chain info.
+-}
+decrypt : { ciphertextHex : String, beaconJson : String } -> ConcurrentTask String { plaintextHex : String }
 decrypt args =
     ConcurrentTask.define
         { function = "tlock:decrypt"
@@ -88,5 +108,7 @@ decrypt args =
         , errors = ConcurrentTask.expectThrows identity
         , args =
             JE.object
-                [ ( "ciphertextHex", JE.string args.ciphertextHex ) ]
+                [ ( "ciphertextHex", JE.string args.ciphertextHex )
+                , ( "beaconJson", JE.string args.beaconJson )
+                ]
         }

@@ -1,20 +1,3 @@
-// Drand tlock wrapper for the CIP-179 timelocked-ballots demo.
-//
-// Compiled with esbuild (--bundle --platform=neutral --main-fields=browser,module,main --format=esm)
-// from tlock-minimal-example/src/tlock-wrapper.ts, around @mpizenberg/tlock-js
-// (github:mpizenberg/tlock-js#dffa9a3), Drand quicknet, bls-unchained-g1-rfc9380.
-//
-// Exports: encrypt({round, plaintextHex}) -> {ciphertextHex}
-//          decrypt({ciphertextHex})       -> {plaintextHex}     (round read from the blob)
-// Hex strings cross the elm-concurrent-task channel. Crypto is delegated to the
-// fork high-level timelockEncrypt/timelockDecrypt (random 32-byte file key
-// IBE-encrypted to round R, payload ChaCha20-STREAM-encrypted); we only strip
-// the PEM age armor so the stored blob is the raw binary age payload. Round +
-// chain hash stay embedded in the age tlock stanza. Uses window.crypto for RNG.
-//
-// quicknet: chainHash 52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971
-//           genesisTime 1692803367  period 3s  beacon https://api.drand.sh/<hash>/public/<round>
-// Rebuild: see tlock-minimal-example; do not hand-edit this file.
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -1807,7 +1790,7 @@ var require_buffer = __commonJS({
     function numberIsNaN(obj) {
       return obj !== obj;
     }
-    var hexSliceLookupTable = function() {
+    var hexSliceLookupTable = (function() {
       const alphabet = "0123456789abcdef";
       const table = new Array(256);
       for (let i = 0; i < 16; ++i) {
@@ -1817,7 +1800,7 @@ var require_buffer = __commonJS({
         }
       }
       return table;
-    }();
+    })();
     function defineBigIntMethod(fn) {
       return typeof BigInt === "undefined" ? BufferBigIntNotDefined : fn;
     }
@@ -2487,7 +2470,7 @@ var require_poly1305 = __commonJS({
     exports.DIGEST_LENGTH = 16;
     var Poly1305 = (
       /** @class */
-      function() {
+      (function() {
         function Poly13052(key) {
           this.digestLength = exports.DIGEST_LENGTH;
           this._buffer = new Uint8Array(16);
@@ -2863,7 +2846,7 @@ var require_poly1305 = __commonJS({
           return this;
         };
         return Poly13052;
-      }()
+      })()
     );
     exports.Poly1305 = Poly1305;
     function oneTimeAuth(key, data) {
@@ -2900,7 +2883,7 @@ var require_chacha20poly1305 = __commonJS({
     var ZEROS = new Uint8Array(16);
     var ChaCha20Poly13052 = (
       /** @class */
-      function() {
+      (function() {
         function ChaCha20Poly13053(key) {
           this.nonceLength = exports.NONCE_LENGTH;
           this.tagLength = exports.TAG_LENGTH;
@@ -2994,7 +2977,7 @@ var require_chacha20poly1305 = __commonJS({
           wipe_1.wipe(length);
         };
         return ChaCha20Poly13053;
-      }()
+      })()
     );
     exports.ChaCha20Poly1305 = ChaCha20Poly13052;
   }
@@ -6874,6 +6857,15 @@ function client() {
   }
   return cachedClient;
 }
+function beaconClient(beacon) {
+  const real = client();
+  return {
+    options: real.options,
+    chain: () => real.chain(),
+    get: async () => beacon,
+    latest: async () => beacon
+  };
+}
 async function encrypt(args) {
   const payload = import_buffer11.Buffer.from(args.plaintextHex, "hex");
   const armored = await timelockEncrypt(args.round, payload, client());
@@ -6881,14 +6873,20 @@ async function encrypt(args) {
   const ciphertextHex = import_buffer11.Buffer.from(ageBinary, "binary").toString("hex");
   return { ciphertextHex };
 }
+async function fetchRound(args) {
+  const beacon = await fetchBeacon(client(), args.round);
+  return { beaconJson: JSON.stringify(beacon) };
+}
 async function decrypt(args) {
+  const beacon = JSON.parse(args.beaconJson);
   const ageBinary = import_buffer11.Buffer.from(args.ciphertextHex, "hex").toString("binary");
-  const plaintext = await timelockDecrypt(ageBinary, client());
+  const plaintext = await timelockDecrypt(ageBinary, beaconClient(beacon));
   return { plaintextHex: plaintext.toString("hex") };
 }
 export {
   decrypt,
-  encrypt
+  encrypt,
+  fetchRound
 };
 /*! Bundled license information:
 
@@ -6907,17 +6905,9 @@ buffer/index.js:
   (*! noble-hashes - MIT License (c) 2022 Paul Miller (paulmillr.com) *)
 
 @noble/curves/esm/abstract/utils.js:
-  (*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) *)
-
 @noble/curves/esm/abstract/modular.js:
-  (*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) *)
-
 @noble/curves/esm/abstract/curve.js:
-  (*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) *)
-
 @noble/curves/esm/abstract/weierstrass.js:
-  (*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) *)
-
 @noble/curves/esm/bls12-381.js:
   (*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) *)
 */

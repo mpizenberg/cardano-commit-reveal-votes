@@ -109,6 +109,7 @@ type alias Model =
     , cancelTarget : Maybe OnchainSurvey
     , currentTime : Int
     , decryptedBallots : Dict String BallotState
+    , roundBeacons : Dict Int (RemoteData String String)
     }
 
 
@@ -149,6 +150,7 @@ init flags =
             , cancelTarget = Nothing
             , currentTime = 0
             , decryptedBallots = Dict.empty
+            , roundBeacons = Dict.empty
             }
     in
     ( { model | epoch = Loading }
@@ -159,7 +161,6 @@ init flags =
         , Task.perform Tick Time.now
         ]
     )
-
 
 
 {-| Cache/lookup key for a survey ref (also the responseLabel input shape).
@@ -188,6 +189,73 @@ cachedResponses model ref =
         |> Maybe.withDefault []
 
 
+{-| Start an independent decrypt task per ballot, all sharing one already-fetched
+beacon (no network I/O). Each ballot updates its own `decryptedBallots` entry.
+-}
+startDecrypts : String -> List ( String, String ) -> Model -> ( Model, Cmd Msg )
+startDecrypts beaconJson ballots model =
+    List.foldl
+        (\( key, ciphertextHex ) ( m, cmds ) ->
+            let
+                ( newPool, cmd ) =
+                    ConcurrentTask.attempt
+                        { pool = m.taskPool
+                        , send = sendTask
+                        , onComplete = BallotDecrypted key
+                        }
+                        (Tlock.decrypt { ciphertextHex = ciphertextHex, beaconJson = beaconJson })
+            in
+            ( { m | taskPool = newPool, decryptedBallots = Dict.insert key Decrypting m.decryptedBallots }
+            , cmd :: cmds
+            )
+        )
+        ( model, [] )
+        ballots
+        |> Tuple.mapSecond Cmd.batch
+
+
+{-| Mark every ballot of a failed round fetch with the error.
+-}
+failRound : Int -> List ( String, String ) -> String -> Model -> Model
+failRound round ballots err model =
+    { model
+        | roundBeacons = Dict.insert round (Failure err) model.roundBeacons
+        , decryptedBallots =
+            List.foldl (\( k, _ ) -> Dict.insert k (DecryptError ("Round fetch failed: " ++ err)))
+                model.decryptedBallots
+                ballots
+    }
+
+
+{-| Timelocked ballots of a survey that are not yet revealed, as
+`(ballotKey, ciphertextHex)` pairs ready for `RevealAll`.
+-}
+revealableBallots : Model -> List OnchainResponse -> List ( String, String )
+revealableBallots model responses =
+    List.filterMap
+        (\resp ->
+            case resp.response.answers of
+                ST.TimelockedAnswers blob ->
+                    let
+                        key =
+                            Results.ballotKey resp
+                    in
+                    case Dict.get key model.decryptedBallots of
+                        Just (Decrypted _) ->
+                            Nothing
+
+                        Just Decrypting ->
+                            Nothing
+
+                        _ ->
+                            Just ( key, Bytes.toHex blob )
+
+                ST.PublicAnswers _ ->
+                    Nothing
+        )
+        responses
+
+
 
 -- MSG
 
@@ -212,7 +280,9 @@ type Msg
     | GotResponseMetadata ST.SurveyRef (Result Http.Error (List Api.SurveyTxMetadata))
     | Tick Time.Posix
     | TimelockEncrypted (ConcurrentTask.Response String { ciphertextHex : String })
-    | RevealBallot String String
+    | RevealBallot Int String String
+    | RevealAll Int (List ( String, String ))
+    | GotRoundBeacon Int (List ( String, String )) (ConcurrentTask.Response String { beaconJson : String })
     | BallotDecrypted String (ConcurrentTask.Response String { plaintextHex : String })
     | ExportCsv OnchainSurvey
 
@@ -325,22 +395,48 @@ update msg model =
                     , Cmd.none
                     )
 
-        RevealBallot key ciphertextHex ->
-            let
-                ( newPool, cmd ) =
-                    ConcurrentTask.attempt
-                        { pool = model.taskPool
-                        , send = sendTask
-                        , onComplete = BallotDecrypted key
-                        }
-                        (Tlock.decrypt { ciphertextHex = ciphertextHex })
-            in
-            ( { model
-                | taskPool = newPool
-                , decryptedBallots = Dict.insert key Decrypting model.decryptedBallots
-              }
-            , cmd
-            )
+        RevealBallot round key ciphertextHex ->
+            update (RevealAll round [ ( key, ciphertextHex ) ]) model
+
+        RevealAll round ballots ->
+            case Dict.get round model.roundBeacons of
+                Just (Success beaconJson) ->
+                    -- Beacon already fetched for this round: decrypt locally, no network.
+                    startDecrypts beaconJson ballots model
+
+                _ ->
+                    let
+                        ( newPool, cmd ) =
+                            ConcurrentTask.attempt
+                                { pool = model.taskPool
+                                , send = sendTask
+                                , onComplete = GotRoundBeacon round ballots
+                                }
+                                (Tlock.fetchRound { round = round })
+
+                        decrypting =
+                            List.foldl (\( k, _ ) -> Dict.insert k Decrypting) model.decryptedBallots ballots
+                    in
+                    ( { model
+                        | taskPool = newPool
+                        , roundBeacons = Dict.insert round Loading model.roundBeacons
+                        , decryptedBallots = decrypting
+                      }
+                    , cmd
+                    )
+
+        GotRoundBeacon round ballots response ->
+            case response of
+                ConcurrentTask.Success { beaconJson } ->
+                    startDecrypts beaconJson
+                        ballots
+                        { model | roundBeacons = Dict.insert round (Success beaconJson) model.roundBeacons }
+
+                ConcurrentTask.Error err ->
+                    ( failRound round ballots err model, Cmd.none )
+
+                ConcurrentTask.UnexpectedError _ ->
+                    ( failRound round ballots "unexpected error" model, Cmd.none )
 
         BallotDecrypted key response ->
             let
@@ -1017,6 +1113,20 @@ viewRevealProgress model survey deduped =
                             ++ String.fromInt pending
                         )
                     ]
+                , let
+                    pendingBallots =
+                        revealableBallots model deduped
+                  in
+                  if isUnlocked && not (List.isEmpty pendingBallots) then
+                    button
+                        [ HA.class "btn btn-primary btn-sm"
+                        , HA.style "margin-top" "0.5rem"
+                        , onClick (RevealAll cfg.round pendingBallots)
+                        ]
+                        [ text ("Reveal all " ++ String.fromInt (List.length pendingBallots) ++ " ballot(s)") ]
+
+                  else
+                    text ""
                 ]
 
 
@@ -1069,7 +1179,6 @@ revealedItems model resp =
 answerItemsOf : Model -> OnchainResponse -> List ST.AnswerItem
 answerItemsOf model resp =
     revealedItems model resp |> Maybe.withDefault []
-
 
 
 viewQuestionResult : List ST.AnswerItem -> Int -> ST.SurveyQuestion -> Html Msg
@@ -1856,7 +1965,7 @@ viewTimelockedAnswers model maybeDef resp blob =
                             [ p [ HA.class "error" ] [ text err ]
                             , button
                                 [ HA.class "btn btn-sm"
-                                , onClick (RevealBallot key (Bytes.toHex blob))
+                                , onClick (RevealBallot cfg.round key (Bytes.toHex blob))
                                 ]
                                 [ text "Retry reveal" ]
                             ]
@@ -1864,7 +1973,7 @@ viewTimelockedAnswers model maybeDef resp blob =
                     Nothing ->
                         button
                             [ HA.class "btn btn-primary"
-                            , onClick (RevealBallot key (Bytes.toHex blob))
+                            , onClick (RevealBallot cfg.round key (Bytes.toHex blob))
                             ]
                             [ text "Reveal answers" ]
 

@@ -96,6 +96,7 @@ type alias Model =
     , proposals : WebData (Dict String ActiveProposal)
     , walletsDiscovered : List WalletDescriptor
     , wallet : Maybe Cip30.Wallet
+    , walletError : Maybe String
     , taskPool : ConcurrentTask.Pool Msg
     , errors : List String
     , activeTab : Tab
@@ -139,6 +140,7 @@ init flags =
             , proposals = NotAsked
             , walletsDiscovered = []
             , wallet = Nothing
+            , walletError = Nothing
             , taskPool = ConcurrentTask.pool
             , errors = []
             , activeTab = SurveysTab
@@ -312,6 +314,7 @@ type Msg
     | ResponseDecrypted String (ConcurrentTask.Response String { plaintextHex : String })
     | ExportCsv OnchainSurvey
     | CopyKioskLink String
+    | DismissErrors
 
 
 
@@ -359,7 +362,7 @@ update msg model =
                     ( { model | errors = JD.errorToString err :: model.errors }, Cmd.none )
 
         ConnectWalletClicked { id, supportedExtensions } ->
-            ( model
+            ( { model | walletError = Nothing }
             , toWallet
                 (Cip30.encodeRequest
                     (Cip30.enableWallet
@@ -372,7 +375,7 @@ update msg model =
             )
 
         DisconnectWalletClicked ->
-            ( { model | wallet = Nothing, walletUtxos = Nothing, submissionStatus = NotSubmitting }, Cmd.none )
+            ( { model | wallet = Nothing, walletUtxos = Nothing, walletError = Nothing, submissionStatus = NotSubmitting }, Cmd.none )
 
         OnTaskProgress ( taskPool, cmd ) ->
             ( { model | taskPool = taskPool }, cmd )
@@ -498,6 +501,9 @@ update msg model =
 
         CopyKioskLink url ->
             ( { model | copiedKioskLink = Just url }, copyToClipboard url )
+
+        DismissErrors ->
+            ( { model | errors = [] }, Cmd.none )
 
         TabClicked tab ->
             ( { model | activeTab = tab }, Cmd.none )
@@ -768,41 +774,46 @@ submitSurvey model =
                     ( { model | surveyFormError = Just "Wallet UTxOs not loaded yet" }, Cmd.none )
 
                 ( Just wallet, Just utxos ) ->
-                    let
-                        changeAddr =
-                            Cip30.walletChangeAddress wallet
+                    case checkWalletNetwork model.networkId wallet of
+                        Err netErr ->
+                            ( { model | surveyFormError = Just netErr }, Cmd.none )
 
-                        surveyMetadatum =
-                            Codec.toMetadatum def
+                        Ok () ->
+                            let
+                                changeAddr =
+                                    Cip30.walletChangeAddress wallet
 
-                        -- CIP-179: owner key hash must be in required_signers
-                        requiredSignerInfo =
-                            case def.owner of
-                                VKeyHash hash ->
-                                    [ TxRequiredSigner hash ]
+                                surveyMetadatum =
+                                    Codec.toMetadatum def
 
-                                ScriptHash _ ->
-                                    []
+                                -- CIP-179: owner key hash must be in required_signers
+                                requiredSignerInfo =
+                                    case def.owner of
+                                        VKeyHash hash ->
+                                            [ TxRequiredSigner hash ]
 
-                        txResult =
-                            TxIntent.finalize utxos
-                                (TxMetadata { tag = N.fromSafeInt Labels.metadataLabel, metadata = surveyMetadatum }
-                                    :: TxMetadata { tag = N.fromSafeInt Labels.definitionsLabel, metadata = Metadatum.List [] }
-                                    :: requiredSignerInfo
-                                )
-                                [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
-                    in
-                    case txResult of
-                        Err err ->
-                            ( { model | surveyFormError = Just (TxIntent.errorToString err) }, Cmd.none )
+                                        ScriptHash _ ->
+                                            []
 
-                        Ok { tx } ->
-                            ( { model
-                                | submissionStatus = WaitingForSignature { tx = tx, createdSurvey = Just def }
-                                , surveyFormError = Nothing
-                              }
-                            , toWallet (Cip30.encodeRequest (Cip30.signTx wallet { partialSign = False } tx))
-                            )
+                                txResult =
+                                    TxIntent.finalize utxos
+                                        (TxMetadata { tag = N.fromSafeInt Labels.metadataLabel, metadata = surveyMetadatum }
+                                            :: TxMetadata { tag = N.fromSafeInt Labels.definitionsLabel, metadata = Metadatum.List [] }
+                                            :: requiredSignerInfo
+                                        )
+                                        [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
+                            in
+                            case txResult of
+                                Err err ->
+                                    ( { model | surveyFormError = Just (TxIntent.errorToString err) }, Cmd.none )
+
+                                Ok { tx } ->
+                                    ( { model
+                                        | submissionStatus = WaitingForSignature { tx = tx, createdSurvey = Just def }
+                                        , surveyFormError = Nothing
+                                      }
+                                    , toWallet (Cip30.encodeRequest (Cip30.signTx wallet { partialSign = False } tx))
+                                    )
 
 
 walletResponseDecoder : Decoder (Cip30.Response Cip30.ApiResponse)
@@ -818,12 +829,17 @@ handleWalletResponse response model =
             ( { model | walletsDiscovered = wallets }, Cmd.none )
 
         Cip30.EnabledWallet wallet ->
-            ( { model | wallet = Just wallet }
-            , toWallet
-                (Cip30.encodeRequest
-                    (Cip30.getUtxos wallet { amount = Nothing, paginate = Nothing })
-                )
-            )
+            case checkWalletNetwork model.networkId wallet of
+                Err err ->
+                    ( { model | wallet = Nothing, walletError = Just err }, Cmd.none )
+
+                Ok () ->
+                    ( { model | wallet = Just wallet, walletError = Nothing }
+                    , toWallet
+                        (Cip30.encodeRequest
+                            (Cip30.getUtxos wallet { amount = Nothing, paginate = Nothing })
+                        )
+                    )
 
         Cip30.ApiResponse _ apiResponse ->
             handleApiResponse apiResponse model
@@ -1409,22 +1425,22 @@ tabButton tab label activeTab =
 viewNetworkInfo : NetworkId -> Html Msg
 viewNetworkInfo networkId =
     p [ HA.class "meta" ]
-        [ text <|
-            "Network: "
-                ++ (case networkId of
-                        Mainnet ->
-                            "Mainnet"
-
-                        Testnet ->
-                            "Preview (Testnet)"
-                   )
-        ]
+        [ text ("Network: " ++ networkIdName networkId) ]
 
 
 viewWalletBar : Model -> Html Msg
 viewWalletBar model =
+    let
+        walletErrorView =
+            case model.walletError of
+                Just err ->
+                    [ p [ HA.class "error" ] [ text err ] ]
+
+                Nothing ->
+                    []
+    in
     div [ HA.class "wallet-bar" ]
-        (case model.wallet of
+        ((case model.wallet of
             Just wallet ->
                 [ span [ HA.class "connected" ]
                     [ text ("Connected: " ++ (Cip30.walletDescriptor wallet).name) ]
@@ -1443,6 +1459,8 @@ viewWalletBar model =
                                 [ text ("Connect " ++ w.name) ]
                         )
                         model.walletsDiscovered
+         )
+            ++ walletErrorView
         )
 
 
@@ -1680,6 +1698,39 @@ viewFillSurveyTab model =
                 ]
 
 
+{-| Human-readable network name, shared by the network banner and the
+wallet-network guard.
+-}
+networkIdName : NetworkId -> String
+networkIdName networkId =
+    case networkId of
+        Mainnet ->
+            "Mainnet"
+
+        Testnet ->
+            "Preview (Testnet)"
+
+
+{-| Guard: the connected wallet must operate on the same network the app targets.
+We read the network byte of the wallet's change address instead of issuing a
+CIP-30 `getNetworkId` request. A mismatch would silently desync on-chain reads
+(the Koios endpoint is picked by the app's network) from tx submission (routed by
+the wallet), so callers reject the wallet / block tx building on `Err`.
+-}
+checkWalletNetwork : NetworkId -> Cip30.Wallet -> Result String ()
+checkWalletNetwork expected wallet =
+    case Cardano.Address.extractNetworkId (Cip30.walletChangeAddress wallet) of
+        Just actual ->
+            if actual == expected then
+                Ok ()
+
+            else
+                Err ("Wallet is on " ++ networkIdName actual ++ " but this app targets " ++ networkIdName expected ++ ". Switch your wallet's network and reconnect.")
+
+        Nothing ->
+            Err "Could not determine the wallet's network from its change address."
+
+
 {-| Credential identifying a responder for the given role. Stakeholder votes are
 keyed by the wallet's stake key (so the same payment key voting from different
 stake accounts stays distinct); all other roles use the payment credential.
@@ -1776,48 +1827,53 @@ buildSignResponseTx : Model -> Credential -> Metadatum.Metadatum -> ( Model, Cmd
 buildSignResponseTx model responderCred responseMeta =
     case ( model.wallet, model.walletUtxos ) of
         ( Just wallet, Just utxos ) ->
-            let
-                changeAddr =
-                    Cip30.walletChangeAddress wallet
+            case checkWalletNetwork model.networkId wallet of
+                Err netErr ->
+                    ( { model | responseFormError = Just netErr, submissionStatus = NotSubmitting }, Cmd.none )
 
-                requiredSignerInfo =
-                    case responderCred of
-                        VKeyHash hash ->
-                            [ TxRequiredSigner hash ]
+                Ok () ->
+                    let
+                        changeAddr =
+                            Cip30.walletChangeAddress wallet
 
-                        ScriptHash _ ->
-                            []
+                        requiredSignerInfo =
+                            case responderCred of
+                                VKeyHash hash ->
+                                    [ TxRequiredSigner hash ]
 
-                responseLabelInfo =
-                    case model.responseTarget of
-                        Just survey ->
-                            [ TxMetadata
-                                { tag = N.fromSafeInt (Labels.responseLabel { txHash = survey.txHash, index = survey.index })
-                                , metadata = Metadatum.List []
-                                }
-                            ]
+                                ScriptHash _ ->
+                                    []
 
-                        Nothing ->
-                            []
+                        responseLabelInfo =
+                            case model.responseTarget of
+                                Just survey ->
+                                    [ TxMetadata
+                                        { tag = N.fromSafeInt (Labels.responseLabel { txHash = survey.txHash, index = survey.index })
+                                        , metadata = Metadatum.List []
+                                        }
+                                    ]
 
-                txResult =
-                    TxIntent.finalize utxos
-                        (TxMetadata { tag = N.fromSafeInt Labels.metadataLabel, metadata = responseMeta }
-                            :: (responseLabelInfo ++ requiredSignerInfo)
-                        )
-                        [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
-            in
-            case txResult of
-                Err err ->
-                    ( { model | responseFormError = Just (TxIntent.errorToString err), submissionStatus = NotSubmitting }, Cmd.none )
+                                Nothing ->
+                                    []
 
-                Ok { tx } ->
-                    ( { model
-                        | submissionStatus = WaitingForSignature { tx = tx, createdSurvey = Nothing }
-                        , responseFormError = Nothing
-                      }
-                    , toWallet (Cip30.encodeRequest (Cip30.signTx wallet { partialSign = True } tx))
-                    )
+                        txResult =
+                            TxIntent.finalize utxos
+                                (TxMetadata { tag = N.fromSafeInt Labels.metadataLabel, metadata = responseMeta }
+                                    :: (responseLabelInfo ++ requiredSignerInfo)
+                                )
+                                [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
+                    in
+                    case txResult of
+                        Err err ->
+                            ( { model | responseFormError = Just (TxIntent.errorToString err), submissionStatus = NotSubmitting }, Cmd.none )
+
+                        Ok { tx } ->
+                            ( { model
+                                | submissionStatus = WaitingForSignature { tx = tx, createdSurvey = Nothing }
+                                , responseFormError = Nothing
+                              }
+                            , toWallet (Cip30.encodeRequest (Cip30.signTx wallet { partialSign = True } tx))
+                            )
 
         _ ->
             ( { model | responseFormError = Just "Wallet not ready", submissionStatus = NotSubmitting }, Cmd.none )
@@ -1896,43 +1952,48 @@ submitCancellation model =
                     ( { model | errors = "Wallet UTxOs not loaded yet" :: model.errors }, Cmd.none )
 
                 ( Just wallet, Just utxos ) ->
-                    let
-                        changeAddr =
-                            Cip30.walletChangeAddress wallet
+                    case checkWalletNetwork model.networkId wallet of
+                        Err netErr ->
+                            ( { model | errors = netErr :: model.errors }, Cmd.none )
 
-                        surveyRef =
-                            { txHash = target.txHash, index = target.index }
+                        Ok () ->
+                            let
+                                changeAddr =
+                                    Cip30.walletChangeAddress wallet
 
-                        cancellationMeta =
-                            Codec.buildCancellationMetadatum surveyRef
+                                surveyRef =
+                                    { txHash = target.txHash, index = target.index }
 
-                        requiredSignerInfo =
-                            case target.definition.owner of
-                                VKeyHash hash ->
-                                    [ TxRequiredSigner hash ]
+                                cancellationMeta =
+                                    Codec.buildCancellationMetadatum surveyRef
 
-                                ScriptHash _ ->
-                                    []
+                                requiredSignerInfo =
+                                    case target.definition.owner of
+                                        VKeyHash hash ->
+                                            [ TxRequiredSigner hash ]
 
-                        txResult =
-                            TxIntent.finalize utxos
-                                (TxMetadata { tag = N.fromSafeInt Labels.metadataLabel, metadata = cancellationMeta }
-                                    :: TxMetadata { tag = N.fromSafeInt Labels.definitionsLabel, metadata = Metadatum.List [] }
-                                    :: TxMetadata { tag = N.fromSafeInt (Labels.responseLabel surveyRef), metadata = Metadatum.List [] }
-                                    :: requiredSignerInfo
-                                )
-                                [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
-                    in
-                    case txResult of
-                        Err err ->
-                            ( { model | errors = TxIntent.errorToString err :: model.errors }, Cmd.none )
+                                        ScriptHash _ ->
+                                            []
 
-                        Ok { tx } ->
-                            ( { model
-                                | submissionStatus = WaitingForSignature { tx = tx, createdSurvey = Nothing }
-                              }
-                            , toWallet (Cip30.encodeRequest (Cip30.signTx wallet { partialSign = False } tx))
-                            )
+                                txResult =
+                                    TxIntent.finalize utxos
+                                        (TxMetadata { tag = N.fromSafeInt Labels.metadataLabel, metadata = cancellationMeta }
+                                            :: TxMetadata { tag = N.fromSafeInt Labels.definitionsLabel, metadata = Metadatum.List [] }
+                                            :: TxMetadata { tag = N.fromSafeInt (Labels.responseLabel surveyRef), metadata = Metadatum.List [] }
+                                            :: requiredSignerInfo
+                                        )
+                                        [ Spend (FromWallet { address = changeAddr, value = Value.onlyLovelace N.zero, guaranteedUtxos = [] }) ]
+                            in
+                            case txResult of
+                                Err err ->
+                                    ( { model | errors = TxIntent.errorToString err :: model.errors }, Cmd.none )
+
+                                Ok { tx } ->
+                                    ( { model
+                                        | submissionStatus = WaitingForSignature { tx = tx, createdSurvey = Nothing }
+                                      }
+                                    , toWallet (Cip30.encodeRequest (Cip30.signTx wallet { partialSign = False } tx))
+                                    )
 
 
 
@@ -2101,7 +2162,9 @@ viewErrors errors =
 
     else
         div []
-            (List.map (\err -> p [ HA.class "error" ] [ text err ]) errors)
+            (List.map (\err -> p [ HA.class "error" ] [ text err ]) errors
+                ++ [ button [ onClick DismissErrors ] [ text "Dismiss errors" ] ]
+            )
 
 
 

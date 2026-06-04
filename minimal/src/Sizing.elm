@@ -235,6 +235,7 @@ knobMax knob =
 
 type Template
     = TplFloor
+    | TplAverage
     | TplMaxDesc
     | TplMaxQuestions
     | TplMaxOptions
@@ -247,6 +248,18 @@ applyTemplate tpl =
     case tpl of
         TplFloor ->
             { defaultParams | target = DefinitionTarget, qType = QSingle, numQuestions = 1, optionsPerQuestion = 2 }
+
+        TplAverage ->
+            { defaultParams
+                | target = DefinitionTarget
+                , qType = QRanking
+                , numQuestions = 3
+                , optionsPerQuestion = 5
+                , titleChars = 50
+                , descChars = 200
+                , promptChars = 70
+                , optionChars = 12
+            }
 
         TplMaxDesc ->
             { defaultParams | target = DefinitionTarget, qType = QSingle, numQuestions = 1, optionsPerQuestion = 2, descChars = 8000 }
@@ -622,6 +635,7 @@ viewTemplates =
         [ h3 [] [ text "Templates" ]
         , div [ HA.style "display" "flex", HA.style "flex-wrap" "wrap", HA.style "gap" "0.5rem" ]
             [ tplBtn TplFloor "Definition floor"
+            , tplBtn TplAverage "Average definition"
             , tplBtn TplMaxDesc "Max description"
             , tplBtn TplMaxQuestions "Max questions"
             , tplBtn TplMaxOptions "Max options (ranking)"

@@ -245,24 +245,29 @@ in `spec_version = 3` (between v2 and v4). Unlike the v4 items above, these were
 not about CIP-191 convergence; they were independent additions, all carried
 forward into v4.
 
-### v3.1 Timelocked submission mode (Drand `tlock`)
+### v3.1 Sealed submission mode (timelock encryption / Drand `tlock`)
 
 - **Change.** A `submission_mode` field is added to `survey_definition` as a
   tagged sum type: `[0]` **public** (plaintext answer items, as in v1/v2) or
-  `[1, drand_chain_hash, round, padding_size]` **timelocked**. In timelocked mode
-  a response carries a Drand `tlock` ciphertext (a new `chunked_bytes` primitive)
-  in place of plaintext answers; the `response_answers` field therefore accepts
-  *either* `[+ answer_item]` (public) *or* `chunked_bytes` (timelocked), the two
-  distinguished by shape (arrays vs. byte strings). Answers are encrypted at
-  submission and become decryptable by anyone once `round` publishes on the pinned
-  Drand chain. `padding_size` is the minimum plaintext length each response is
-  padded to before encryption, so ciphertext length does not leak answer content.
+  `[1, drand_chain_hash, round, padding_size]` **sealed**. In sealed mode a
+  response carries a timelock-encrypted (Drand `tlock`) ciphertext (a new
+  `chunked_bytes` primitive) in place of plaintext answers; the `response_answers`
+  field therefore accepts *either* `[+ answer_item]` (public) *or* `chunked_bytes`
+  (sealed), the two distinguished by shape (arrays vs. byte strings). Answers are
+  encrypted at submission and become decryptable by anyone — and by no one
+  earlier, not even the survey owner — once `round` publishes on the pinned Drand
+  chain. `padding_size` is the minimum plaintext length each response is padded to
+  before encryption, so ciphertext length does not leak answer content.
 - **Rationale.** Enables **delayed-reveal** polling — commit answers now, everyone
   can decrypt after the round — with no trusted operator or reveal phase: the
   trustless, fully-on-chain analogue of commit-reveal voting (the model this
   repository is named for). It is delayed reveal, *not* permanent secrecy. New
   primitive `drand_chain_hash = bytes .size 32` and the Abstract gain a line
-  noting "public or timelocked responses."
+  noting "public or sealed responses."
+- **Naming.** The mode is named **sealed** (sealed-ballot metaphor) rather than
+  "timelocked"; *timelock encryption* / *Drand `tlock`* is retained as the name of
+  the underlying mechanism. "Sealed" reads as the opposite of "public," and unlike
+  "private"/"encrypted" it does not imply permanent secrecy.
 
 ### v3.2 `specVersion` restored to `survey_response`
 
@@ -271,7 +276,7 @@ forward into v4.
   referenced survey supplied it). A response's `specVersion` MUST match the
   referenced definition's.
 - **Rationale.** It lets a response be decoded on its own — in particular its
-  answer encoding and whether answers are plaintext or timelocked ciphertext —
+  answer encoding and whether answers are plaintext or sealed ciphertext —
   without first having to resolve the survey definition. (v4 keeps this as key `0`
   of the `survey_response` map.)
 

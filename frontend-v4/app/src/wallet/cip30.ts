@@ -61,6 +61,22 @@ function drepCredentialFromKey(
   }
 }
 
+/**
+ * Whether the dApp is already authorized for this wallet (CIP-30 `isEnabled`).
+ * When true, {@link connectWallet} can re-enable it without a user prompt — the
+ * basis for silent auto-reconnect on reload. Safe (returns false) if the wallet
+ * is absent or throws.
+ */
+export async function isWalletEnabled(key: string): Promise<boolean> {
+  const entry = window.cardano?.[key];
+  if (!entry) return false;
+  try {
+    return await entry.isEnabled();
+  } catch {
+    return false;
+  }
+}
+
 /** Enable a wallet and read its identity (no signing performed). */
 export async function connectWallet(key: string): Promise<ConnectedWallet> {
   const entry = window.cardano?.[key];

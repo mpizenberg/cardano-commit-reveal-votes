@@ -47,6 +47,9 @@ export const KOIOS_TOKEN_STORAGE_KEY = "tessera.koiosToken";
 /** localStorage key for a user-selected network (overrides the build env). */
 export const NETWORK_STORAGE_KEY = "tessera.network";
 
+/** localStorage key for the last connected CIP-30 wallet (for auto-reconnect). */
+export const LAST_WALLET_STORAGE_KEY = "tessera.lastWallet";
+
 /** The build-time default network (from env), ignoring any user override. */
 export function envNetwork(): Network {
   return import.meta.env.VITE_NETWORK === "mainnet" ? "mainnet" : "preview";
@@ -68,6 +71,34 @@ export function storeNetwork(network: Network): void {
     localStorage.setItem(NETWORK_STORAGE_KEY, network);
   } catch {
     // storage unavailable — the in-memory value won't survive a reload
+  }
+}
+
+/** The CIP-30 key of the last connected wallet, if one was remembered. */
+export function storedLastWallet(): string | undefined {
+  try {
+    return localStorage.getItem(LAST_WALLET_STORAGE_KEY) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Remember (or, when empty, forget) the last connected wallet key. */
+export function storeLastWallet(key: string): void {
+  try {
+    if (key) localStorage.setItem(LAST_WALLET_STORAGE_KEY, key);
+    else localStorage.removeItem(LAST_WALLET_STORAGE_KEY);
+  } catch {
+    // storage unavailable — auto-reconnect just won't persist
+  }
+}
+
+/** Forget the remembered wallet (on explicit disconnect). */
+export function clearLastWallet(): void {
+  try {
+    localStorage.removeItem(LAST_WALLET_STORAGE_KEY);
+  } catch {
+    // storage unavailable — nothing to clear
   }
 }
 

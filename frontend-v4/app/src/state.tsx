@@ -13,6 +13,7 @@ import {
   createContext,
   createResource,
   createSignal,
+  onMount,
   useContext,
   type Accessor,
   type ParentComponent,
@@ -25,6 +26,9 @@ import {
   storeKoiosToken,
   envKoiosToken,
   storeNetwork,
+  storedLastWallet,
+  storeLastWallet,
+  clearLastWallet,
   type AppConfig,
   type Network,
 } from "~/config";
@@ -42,7 +46,11 @@ import {
   type SurveyAggregate,
 } from "~/domain/survey";
 import { claimableRoles } from "~/domain/roles";
-import { connectWallet, listInstalledWallets } from "~/wallet/cip30";
+import {
+  connectWallet,
+  isWalletEnabled,
+  listInstalledWallets,
+} from "~/wallet/cip30";
 import type { ConnectedWallet, InstalledWallet } from "~/wallet/types";
 import type { Credential, Metadatum } from "cip-179";
 
@@ -167,25 +175,52 @@ export const AppProvider: ParentComponent = (props) => {
   const [connectError, setConnectError] = createSignal<string | null>(null);
   const [activeRole, setActiveRole] = createSignal<number | null>(null);
 
-  const connect = async (key: string): Promise<void> => {
+  // `silent` is the auto-reconnect path: it must never surface an error popup —
+  // a failed silent reconnect just forgets the wallet and stays disconnected.
+  const doConnect = async (key: string, silent: boolean): Promise<void> => {
     setConnecting(true);
-    setConnectError(null);
+    if (!silent) setConnectError(null);
     try {
       const w = await connectWallet(key);
       setWallet(w);
       setActiveRole(claimableRoles(w.identity)[0] ?? null);
+      storeLastWallet(key);
     } catch (e) {
-      setConnectError(e instanceof Error ? e.message : String(e));
+      if (silent) clearLastWallet();
+      else setConnectError(e instanceof Error ? e.message : String(e));
     } finally {
       setConnecting(false);
     }
   };
 
+  const connect = (key: string): Promise<void> => doConnect(key, false);
+
   const disconnect = (): void => {
     setWallet(null);
     setActiveRole(null);
     setConnectError(null);
+    clearLastWallet();
   };
+
+  // Auto-reconnect the last wallet on reload — but only if the dApp is still
+  // authorized for it (CIP-30 `isEnabled`), so this never triggers a prompt.
+  // Wallets inject onto `window.cardano` asynchronously, so poll briefly for the
+  // remembered one before giving up (without clearing it — it may just be slow
+  // or disabled this session).
+  onMount(() => {
+    const key = storedLastWallet();
+    if (!key) return;
+    void (async () => {
+      for (let i = 0; i < 15; i++) {
+        if (window.cardano?.[key]) {
+          if (await isWalletEnabled(key)) await doConnect(key, true);
+          else clearLastWallet();
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    })();
+  });
 
   const value: AppState = {
     config,

@@ -12,10 +12,12 @@ import { createStore } from "solid-js/store";
 import { A, useNavigate, useParams } from "@solidjs/router";
 import {
   SPEC_VERSION,
+  encodeAnswerItem,
   encodePayload,
   validateResponse,
   type ContentAnchor,
   type Credential,
+  type Metadatum,
   type OptionsOrCount,
   type Question,
   type RatingScale,
@@ -46,6 +48,7 @@ import {
 } from "~/domain/respond";
 import { usePresentation } from "~/enrichment/usePresentation";
 import { IPFS_PROVIDERS } from "~/enrichment/providers";
+import { OnchainPreview } from "~/ui/components/OnchainPreview";
 import { hexToBytes } from "~/util/hex";
 import { formatRevealDate } from "~/tlock/drand";
 import { roleColors, roleLabel, shortRef, viewStatus } from "~/ui/format";
@@ -226,6 +229,65 @@ export const Respond: Component = () => {
     return { uri: pinned.uri, hash: pinned.hash };
   };
 
+  // --- Pro on-chain preview ------------------------------------------------
+  // A side-effect-free read of the manual rationale anchor (the submit path's
+  // `manualRationaleAnchor` also sets the problem list, which a memo must not).
+  // Included in the preview only when fully valid; otherwise omitted.
+  const previewRationale = (): ContentAnchor | undefined => {
+    if (!app.ui.pro || !rationaleOn() || ratMode() !== "manual")
+      return undefined;
+    const uri = ratUri().trim();
+    if (uri === "") return undefined;
+    try {
+      const hash = hexToBytes(ratHash().trim());
+      return hash.length === 32 ? { uri, hash } : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Public surveys: the payload is built live from the current drafts.
+  const publicPreview = createMemo<Metadatum | undefined>(() => {
+    if (!app.ui.pro || sealedMode()) return undefined;
+    const def = definition();
+    const s = survey();
+    const r = role();
+    const cred = credential();
+    if (!def || !s || r === null || !cred) return undefined;
+    try {
+      const response = buildResponse(
+        s.record.ref,
+        r,
+        cred,
+        def.questions,
+        drafts,
+        previewRationale(),
+      );
+      return encodePayload({ type: "responses", responses: [response] });
+    } catch {
+      return undefined;
+    }
+  });
+
+  // Sealed surveys: the on-chain payload is the timelock ciphertext, but we do
+  // NOT encrypt for the preview — encryption runs only when the voter submits.
+  // Instead we show the *plaintext answers* that will be sealed (the exact
+  // metadatum fed to the timelock), built live and cheaply, with no tlock load.
+  const sealedPreview = createMemo<Metadatum | undefined>(() => {
+    const def = definition();
+    if (!def || !sealedMode()) return undefined;
+    try {
+      return collectAnswers(def.questions, drafts).map(encodeAnswerItem);
+    } catch {
+      return undefined;
+    }
+  });
+
+  const previewPayload = (): Metadatum | undefined =>
+    sealedMode() ? sealedPreview() : publicPreview();
+  // Padding the sealed ciphertext is zero-padded to, for the preview note.
+  const sealedPadding = (): number | undefined => sealedMode()?.paddingSize;
+
   const onSubmit = async () => {
     const def = definition();
     const s = survey();
@@ -389,6 +451,14 @@ export const Respond: Component = () => {
               </Show>
               <Show when={submitError()}>
                 <ErrorBox message={submitError()!} />
+              </Show>
+
+              <Show when={app.ui.pro}>
+                <OnchainPreview
+                  payload={previewPayload()}
+                  sealed={sealedMode() !== null}
+                  paddingSize={sealedPadding()}
+                />
               </Show>
             </Switch3>
           </Show>

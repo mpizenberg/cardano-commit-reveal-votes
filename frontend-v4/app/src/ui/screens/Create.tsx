@@ -16,6 +16,7 @@ import {
   Role,
   encodePayload,
   type Credential,
+  type Metadatum,
 } from "cip-179";
 
 import { useApp } from "~/state";
@@ -32,6 +33,7 @@ import {
   type QuestionType,
 } from "~/domain/create";
 import { IPFS_PROVIDERS } from "~/enrichment/providers";
+import { OnchainPreview } from "~/ui/components/OnchainPreview";
 import {
   QUICKNET_CHAIN_HASH_HEX,
   autoRevealRound,
@@ -127,6 +129,23 @@ export const Create: Component = () => {
     return o ? buildDefinition(o, meta, questions) : null;
   });
   const problems = (): string[] => built()?.problems ?? [];
+
+  // Pro on-chain preview: the label-17 definition payload, built live. External
+  // content uses the same placeholder anchor `built` validates with (the real
+  // anchor is only known after pinning at publish time).
+  const previewPayload = createMemo<Metadatum | undefined>(() => {
+    if (!app.ui.pro) return undefined;
+    const b = built();
+    if (!b) return undefined;
+    try {
+      return encodePayload({
+        type: "definitions",
+        definitions: [b.definition],
+      });
+    } catch {
+      return undefined;
+    }
+  });
 
   // The padding size actually used for sealed responses — the auto worst-case
   // size unless the creator overrode it. Shown in the sealed config.
@@ -341,6 +360,9 @@ export const Create: Component = () => {
             {/* right: summary + publish */}
             <aside class="create-aside">
               <SummaryCard meta={meta} qCount={questions.length} />
+              <Show when={app.ui.pro}>
+                <OnchainPreview payload={previewPayload()} />
+              </Show>
               <PublishButton
                 problemCount={problems().length}
                 blockedReason={

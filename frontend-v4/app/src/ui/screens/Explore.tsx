@@ -1,19 +1,44 @@
-import { For, Show, createMemo, type Component, type JSX } from "solid-js";
+import {
+  For,
+  Show,
+  createMemo,
+  createSignal,
+  onCleanup,
+  type Accessor,
+  type Component,
+  type JSX,
+} from "solid-js";
 import { A } from "@solidjs/router";
 
 import { useApp, type ExploreFilter } from "~/state";
 import { refKey, type SurveyAggregate } from "~/domain/survey";
 import { walletControls, walletOwns } from "~/domain/roles";
-import { isClosed, viewStatus, type ViewStatus } from "~/ui/format";
+import { isClosed, viewStatus } from "~/ui/format";
 import { FormMosaic, RoleChips, VisGlyph } from "~/ui/components/glyphs";
+import type { ChainTip } from "~/data/source";
 import type { WalletIdentity } from "~/wallet/types";
 
-const COLS = "54px 30px minmax(210px,1fr) 132px 150px 84px";
+// Seven columns: Form · visibility · answered · survey · eligible · ends · replies.
+const COLS = "52px 24px 26px minmax(190px,1fr) 122px 100px 52px";
+// Below this width the table gets cramped, so each row reflows into a card.
+const CARD_BREAKPOINT = 800;
 
 /** Per-survey wallet flags. */
 interface Flags {
   readonly mine: boolean;
   readonly responded: boolean;
+}
+
+/** Reactive `(max-width)` media query — true while the viewport is narrow. */
+function useNarrow(maxWidth: number): Accessor<boolean> {
+  const mql = window.matchMedia(`(max-width: ${maxWidth}px)`);
+  const [narrow, setNarrow] = createSignal(mql.matches);
+  const onChange = (e: MediaQueryListEvent): void => {
+    setNarrow(e.matches);
+  };
+  mql.addEventListener("change", onChange);
+  onCleanup(() => mql.removeEventListener("change", onChange));
+  return narrow;
 }
 
 const FILTERS: ReadonlyArray<{ value: ExploreFilter; label: string }> = [
@@ -47,12 +72,67 @@ function matchesFilter(
   }
 }
 
+/**
+ * Unix deadline for accepting responses: responses are valid through `endEpoch`
+ * inclusive, so the cutoff is the *start* of the next epoch. Post-Shelley slots
+ * are 1s, so the current epoch began at `tip.time − tip.epochSlot` and each
+ * epoch spans `secondsPerEpoch` seconds.
+ */
+function voteDeadlineUnix(
+  endEpoch: number,
+  tip: ChainTip,
+  secondsPerEpoch: number,
+): number {
+  const epochStartUnix = tip.time - tip.epochSlot;
+  return epochStartUnix + (endEpoch + 1 - tip.epoch) * secondsPerEpoch;
+}
+
+/** Coarse "time left to vote": days+hours up high, hours+minutes near the end. */
+function timeLeft(deadlineUnix: number, nowUnix: number): string {
+  const s = deadlineUnix - nowUnix;
+  if (s <= 0) return "ending now";
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d >= 1) return `${d}d ${h}h left`;
+  if (h >= 1) return `${h}h ${m}m left`;
+  return `${Math.max(1, m)}m left`;
+}
+
+/** What the "Ends" cell reads: time-left while open, lifecycle word once closed. */
+function endsText(
+  a: SurveyAggregate,
+  tip: ChainTip,
+  secondsPerEpoch: number,
+  nowUnix: number,
+): string {
+  const v = viewStatus(a);
+  if (v === "cancelled") return "withdrawn";
+  if (v === "ended") return "closed";
+  return timeLeft(
+    voteDeadlineUnix(a.record.definition.endEpoch, tip, secondsPerEpoch),
+    nowUnix,
+  );
+}
+
 export const Explore: Component = () => {
   const app = useApp();
 
   const all = createMemo(() => app.snapshot()?.surveys ?? []);
-  const tipEpoch = createMemo(() => app.snapshot()?.tip.epoch ?? 0);
+  const tip = createMemo<ChainTip | undefined>(() => app.snapshot()?.tip);
+  const tipEpoch = createMemo(() => tip()?.epoch ?? 0);
   const identity = (): WalletIdentity | null => app.wallet()?.identity ?? null;
+
+  const narrow = useNarrow(CARD_BREAKPOINT);
+
+  // Tick once a minute so the "time left" readout stays roughly live without a
+  // refetch. Pure display — it never feeds a resource, so it can't retrigger I/O.
+  const [nowUnix, setNowUnix] = createSignal(Math.floor(Date.now() / 1000));
+  const clock = setInterval(
+    () => setNowUnix(Math.floor(Date.now() / 1000)),
+    60_000,
+  );
+  onCleanup(() => clearInterval(clock));
 
   // Survey ref keys the connected wallet has responded to.
   const respondedKeys = createMemo<Set<string>>(() => {
@@ -111,6 +191,16 @@ export const Explore: Component = () => {
   const closedRows = createMemo(() =>
     visible().filter((a) => a.govLink === null && isClosed(viewStatus(a))),
   );
+
+  const rowProps = (a: SurveyAggregate): EntryProps => ({
+    a,
+    tip: tip(),
+    secondsPerEpoch: app.config.secondsPerEpoch,
+    nowUnix: nowUnix(),
+    pro: app.ui.pro,
+    flags: flagsOf(a),
+    narrow: narrow(),
+  });
 
   return (
     <main
@@ -249,11 +339,13 @@ export const Explore: Component = () => {
         </div>
       </div>
 
-      {/* register table */}
+      {/* register table (cards on narrow screens) */}
       <div style={{ "margin-top": "8px" }}>
-        <div style={{ "overflow-x": "auto" }}>
-          <div style={{ "min-width": "840px" }}>
-            <HeaderRow />
+        <div style={{ "overflow-x": narrow() ? "visible" : "auto" }}>
+          <div style={{ "min-width": narrow() ? "auto" : "680px" }}>
+            <Show when={!narrow()}>
+              <HeaderRow />
+            </Show>
 
             <Show when={app.snapshot.loading}>
               <Notice text="Loading surveys from Koios…" />
@@ -284,16 +376,7 @@ export const Explore: Component = () => {
                   label="On-chain governance"
                   note="Tied to an Info Action — shown first."
                 />
-                <For each={govRows()}>
-                  {(a) => (
-                    <Row
-                      a={a}
-                      tipEpoch={tipEpoch()}
-                      pro={app.ui.pro}
-                      flags={flagsOf(a)}
-                    />
-                  )}
-                </For>
+                <For each={govRows()}>{(a) => <Entry {...rowProps(a)} />}</For>
               </Show>
 
               <Show when={openRows().length > 0}>
@@ -311,16 +394,7 @@ export const Explore: Component = () => {
                   color="#5E7B49"
                   label="Open · accepting responses"
                 />
-                <For each={openRows()}>
-                  {(a) => (
-                    <Row
-                      a={a}
-                      tipEpoch={tipEpoch()}
-                      pro={app.ui.pro}
-                      flags={flagsOf(a)}
-                    />
-                  )}
-                </For>
+                <For each={openRows()}>{(a) => <Entry {...rowProps(a)} />}</For>
               </Show>
 
               <Show when={closedRows().length > 0}>
@@ -343,14 +417,7 @@ export const Explore: Component = () => {
                 />
                 <div style={{ opacity: "0.56" }}>
                   <For each={closedRows()}>
-                    {(a) => (
-                      <Row
-                        a={a}
-                        tipEpoch={tipEpoch()}
-                        pro={app.ui.pro}
-                        flags={flagsOf(a)}
-                      />
-                    )}
+                    {(a) => <Entry {...rowProps(a)} />}
                   </For>
                 </div>
               </Show>
@@ -397,6 +464,12 @@ const HeaderRow: Component = () => {
     >
       {cell("Form", "center")}
       <span />
+      <span
+        title="Surveys you have answered"
+        style={{ "text-align": "center" }}
+      >
+        {cell("✓", "center")}
+      </span>
       {cell("Survey")}
       {cell("Eligible")}
       {cell("Ends")}
@@ -445,32 +518,102 @@ const SectionLabel: Component<{
   </div>
 );
 
-function endsLabel(v: ViewStatus, endEpoch: number, tipEpoch: number): string {
-  switch (v) {
-    case "public": {
-      const left = endEpoch - tipEpoch;
-      return left <= 0
-        ? "ends this epoch"
-        : `in ${left} epoch${left === 1 ? "" : "s"}`;
-    }
-    case "sealed":
-      return "sealed until reveal";
-    case "ended":
-      return "closed";
-    case "cancelled":
-      return "withdrawn";
-  }
-}
-
-const Row: Component<{
+interface EntryProps {
   a: SurveyAggregate;
-  tipEpoch: number;
+  tip: ChainTip | undefined;
+  secondsPerEpoch: number;
+  nowUnix: number;
   pro: boolean;
   flags: Flags;
-}> = (props) => {
+  narrow: boolean;
+}
+
+/** Pick the card or table-row presentation for the current viewport. */
+const Entry: Component<EntryProps> = (props) => (
+  <Show when={props.narrow} fallback={<GridRow {...props} />}>
+    <CardRow {...props} />
+  </Show>
+);
+
+/** Inline check shown on surveys the connected wallet has answered. */
+const AnsweredCheck: Component = () => (
+  <span
+    title="You answered this survey"
+    aria-label="answered"
+    style={{
+      color: "var(--ok)",
+      "font-size": "13px",
+      "font-weight": "700",
+      "line-height": "1",
+    }}
+  >
+    ✓
+  </span>
+);
+
+const YoursBadge: Component = () => (
+  <span
+    style={{
+      flex: "none",
+      "font-size": "10px",
+      "font-weight": "700",
+      color: "var(--warn)",
+      background: "var(--warn-bg)",
+      border: "1px solid var(--warn-line)",
+      "border-radius": "5px",
+      padding: "1.5px 6px",
+      "white-space": "nowrap",
+    }}
+  >
+    Yours
+  </span>
+);
+
+const OffChainBadge: Component = () => (
+  <span
+    style={{
+      flex: "none",
+      "font-size": "10px",
+      "font-weight": "700",
+      color: "var(--warn)",
+      background: "var(--warn-bg)",
+      border: "1px solid var(--warn-line)",
+      "border-radius": "5px",
+      padding: "1.5px 6px",
+      "white-space": "nowrap",
+    }}
+  >
+    ⚠ labels off-chain
+  </span>
+);
+
+const GovLine: Component<{ actionId: string; title: string | null }> = (
+  props,
+) => (
+  <div
+    style={{
+      "font-family": "var(--mono)",
+      "font-size": "10.5px",
+      color: "var(--gov)",
+      "margin-top": "4px",
+      "white-space": "nowrap",
+      overflow: "hidden",
+      "text-overflow": "ellipsis",
+    }}
+  >
+    ◇ Info Action {shortGovId(props.actionId)}
+    {props.title ? ` · ${props.title}` : ""}
+  </div>
+);
+
+const GridRow: Component<EntryProps> = (props) => {
   const def = () => props.a.record.definition;
   const v = () => viewStatus(props.a);
   const closed = () => isClosed(v());
+  const ends = (): string =>
+    props.tip
+      ? endsText(props.a, props.tip, props.secondsPerEpoch, props.nowUnix)
+      : "—";
   return (
     // A router link, not a div+navigate: a plain click stays client-side (no
     // reload — wallet connection and snapshot survive), while cmd/ctrl/middle
@@ -518,6 +661,17 @@ const Row: Component<{
       >
         <VisGlyph status={v()} />
       </div>
+      <div
+        style={{
+          display: "flex",
+          "justify-content": "center",
+          "align-items": "center",
+        }}
+      >
+        <Show when={props.flags.responded}>
+          <AnsweredCheck />
+        </Show>
+      </div>
       <div style={{ "min-width": "0" }}>
         <div
           style={{
@@ -541,56 +695,11 @@ const Row: Component<{
           >
             {def().title || "Untitled · external content"}
           </span>
-          <Show when={props.flags.responded}>
-            <span
-              style={{
-                flex: "none",
-                "font-size": "10px",
-                "font-weight": "700",
-                color: "var(--ok)",
-                background: "var(--ok-bg)",
-                border: "1px solid var(--ok-line)",
-                "border-radius": "5px",
-                padding: "1.5px 6px",
-                "white-space": "nowrap",
-              }}
-            >
-              ✓ You
-            </span>
-          </Show>
           <Show when={props.flags.mine}>
-            <span
-              style={{
-                flex: "none",
-                "font-size": "10px",
-                "font-weight": "700",
-                color: "var(--warn)",
-                background: "var(--warn-bg)",
-                border: "1px solid var(--warn-line)",
-                "border-radius": "5px",
-                padding: "1.5px 6px",
-                "white-space": "nowrap",
-              }}
-            >
-              Yours
-            </span>
+            <YoursBadge />
           </Show>
           <Show when={def().contentAnchor}>
-            <span
-              style={{
-                flex: "none",
-                "font-size": "10px",
-                "font-weight": "700",
-                color: "var(--warn)",
-                background: "var(--warn-bg)",
-                border: "1px solid var(--warn-line)",
-                "border-radius": "5px",
-                padding: "1.5px 6px",
-                "white-space": "nowrap",
-              }}
-            >
-              ⚠ labels off-chain
-            </span>
+            <OffChainBadge />
           </Show>
         </div>
         <div
@@ -608,20 +717,7 @@ const Row: Component<{
         </div>
         <Show when={props.a.govLink}>
           {(link) => (
-            <div
-              style={{
-                "font-family": "var(--mono)",
-                "font-size": "10.5px",
-                color: "var(--gov)",
-                "margin-top": "4px",
-                "white-space": "nowrap",
-                overflow: "hidden",
-                "text-overflow": "ellipsis",
-              }}
-            >
-              ◇ Info Action {shortGovId(link().actionId)}
-              {link().title ? ` · ${link().title}` : ""}
-            </div>
+            <GovLine actionId={link().actionId} title={link().title} />
           )}
         </Show>
       </div>
@@ -634,7 +730,7 @@ const Row: Component<{
             color: closed() ? "#8A8270" : "#5A5246",
           }}
         >
-          {endsLabel(v(), def().endEpoch, props.tipEpoch)}
+          {ends()}
         </div>
         <Show when={props.pro}>
           <div
@@ -660,6 +756,151 @@ const Row: Component<{
         >
           {v() === "cancelled" ? "—" : props.a.responseCount}
         </span>
+      </div>
+    </A>
+  );
+};
+
+/** A single labelled meta pair in the card's footer row. */
+const MetaChip: Component<{ label: string; children: JSX.Element }> = (
+  props,
+) => (
+  <span style={{ display: "inline-flex", "align-items": "center", gap: "6px" }}>
+    <span
+      style={{
+        "font-family": "var(--mono)",
+        "font-size": "9px",
+        "letter-spacing": ".07em",
+        "text-transform": "uppercase",
+        color: "#B0A488",
+        "font-weight": "600",
+      }}
+    >
+      {props.label}
+    </span>
+    <span
+      style={{ "font-size": "12.5px", color: "#5A5246", "font-weight": "500" }}
+    >
+      {props.children}
+    </span>
+  </span>
+);
+
+const CardRow: Component<EntryProps> = (props) => {
+  const def = () => props.a.record.definition;
+  const v = () => viewStatus(props.a);
+  const closed = () => isClosed(v());
+  const ends = (): string =>
+    props.tip
+      ? endsText(props.a, props.tip, props.secondsPerEpoch, props.nowUnix)
+      : "—";
+  return (
+    <A
+      href={`/survey/${encodeURIComponent(props.a.key)}`}
+      style={{
+        display: "block",
+        padding: "14px 4px",
+        "border-bottom": "1px solid #ECE2D0",
+        "text-decoration": "none",
+        color: "inherit",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          "align-items": "center",
+          gap: "8px",
+          "min-width": "0",
+        }}
+      >
+        <span style={{ flex: "none", display: "inline-flex" }}>
+          <VisGlyph status={v()} />
+        </span>
+        <Show when={props.flags.responded}>
+          <AnsweredCheck />
+        </Show>
+        <span
+          style={{
+            flex: "1",
+            "min-width": "0",
+            "font-family": "var(--serif)",
+            "font-size": "16px",
+            "font-weight": "600",
+            "letter-spacing": "-.005em",
+            color: closed() ? "#5C5648" : "var(--ink)",
+            "white-space": "nowrap",
+            overflow: "hidden",
+            "text-overflow": "ellipsis",
+          }}
+        >
+          {def().title || "Untitled · external content"}
+        </span>
+        <Show when={props.flags.mine}>
+          <YoursBadge />
+        </Show>
+      </div>
+
+      <div
+        style={{
+          "font-size": "12.5px",
+          color: "#A79C88",
+          "margin-top": "3px",
+          display: "-webkit-box",
+          "-webkit-line-clamp": "2",
+          "-webkit-box-orient": "vertical",
+          overflow: "hidden",
+        }}
+      >
+        {def().description ||
+          "Presentation text unavailable — on-chain structure intact."}
+      </div>
+
+      <Show when={def().contentAnchor}>
+        <div style={{ "margin-top": "6px" }}>
+          <OffChainBadge />
+        </div>
+      </Show>
+      <Show when={props.a.govLink}>
+        {(link) => <GovLine actionId={link().actionId} title={link().title} />}
+      </Show>
+
+      <div
+        style={{
+          display: "flex",
+          "flex-wrap": "wrap",
+          "align-items": "center",
+          gap: "8px 16px",
+          "margin-top": "11px",
+        }}
+      >
+        <MetaChip label="Form">
+          <span
+            style={{
+              display: "inline-flex",
+              "align-items": "center",
+              gap: "6px",
+            }}
+          >
+            <FormMosaic count={def().questions.length} size={16} />
+            {def().questions.length}
+          </span>
+        </MetaChip>
+        <Show when={def().eligibleRoles.length > 0}>
+          <MetaChip label="Eligible">
+            <RoleChips roles={def().eligibleRoles} />
+          </MetaChip>
+        </Show>
+        <MetaChip label="Ends">
+          <span style={{ color: closed() ? "#8A8270" : "#5A5246" }}>
+            {ends()}
+          </span>
+        </MetaChip>
+        <MetaChip label="Replies">
+          {v() === "cancelled" ? "—" : String(props.a.responseCount)}
+        </MetaChip>
+        <Show when={props.pro}>
+          <MetaChip label="Epoch">{String(def().endEpoch)}</MetaChip>
+        </Show>
       </div>
     </A>
   );
@@ -703,6 +944,19 @@ const Legend: Component = () => (
       </span>
       <span style={{ "font-size": "11.5px", color: "#A79C88" }}>
         sealed until reveal
+      </span>
+      <span
+        style={{
+          "margin-left": "10px",
+          color: "var(--ok)",
+          "font-weight": "700",
+          "font-size": "12px",
+        }}
+      >
+        ✓
+      </span>
+      <span style={{ "font-size": "11.5px", color: "#A79C88" }}>
+        you answered
       </span>
     </span>
   </div>
